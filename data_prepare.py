@@ -178,81 +178,116 @@ BNSP_AUC = 'bnsp_auc'  # stands for background negative, subgroup positive
 
 from sklearn import metrics
 
+class BiasBenchmark:
+    def __init__(self, train_df_id_na_dropped):
+        # we can use this to divide subgroups(beside, we need to calculate only the 45000, with identities
+        self.validate_df = BiasBenchmark.convert_dataframe_to_bool(train_df_id_na_dropped[IDENTITY_COLUMNS+[TOXICITY_COLUMN]])
 
-def compute_auc(y_true, y_pred):
-    try:
-        return metrics.roc_auc_score(y_true, y_pred)
-    except ValueError:
-        return np.nan
+    @staticmethod
+    def compute_auc(y_true, y_pred):
+        try:
+            return metrics.roc_auc_score(y_true, y_pred)
+        except ValueError:
+            return np.nan
 
+    @staticmethod
+    def compute_subgroup_auc(df, subgroup, label, model_name):
+        """
+        Compute AUC for spefic subgroup
+        :param df: dataframe which contains predictions for all subgroups
+        :param subgroup: compute AUC for this subgroup
+        :param label: target column name
+        :param model_name:
+        :return: auc score
+        """
+        subgroup_examples = df[df[subgroup]]  # innter df[subgroup] will get out boolean list, which is used to select this
+                                                # subgroup examples
+        return BiasBenchmark.compute_auc(subgroup_examples[label], subgroup_examples[model_name])
 
-def compute_subgroup_auc(df, subgroup, label, model_name):
-    subgroup_examples = df[df[subgroup]]
-    return compute_auc(subgroup_examples[label], subgroup_examples[model_name])
+    @staticmethod
+    def compute_bpsn_auc(df, subgroup, label, model_name):
+        """Computes the AUC of the within-subgroup negative examples and the background positive examples."""
+        subgroup_negative_examples = df[df[subgroup] & ~df[label]]
+        non_subgroup_positive_examples = df[~df[subgroup] & df[label]]
+        examples = subgroup_negative_examples.append(non_subgroup_positive_examples)
+        return BiasBenchmark.compute_auc(examples[label], examples[model_name])
 
+    @staticmethod
+    def compute_bnsp_auc(df, subgroup, label, model_name):
+        """Computes the AUC of the within-subgroup positive examples and the background negative examples."""
+        subgroup_positive_examples = df[df[subgroup] & df[label]]
+        non_subgroup_negative_examples = df[~df[subgroup] & ~df[label]]
+        examples = subgroup_positive_examples.append(non_subgroup_negative_examples)
+        return BiasBenchmark.compute_auc(examples[label], examples[model_name])
 
-def compute_bpsn_auc(df, subgroup, label, model_name):
-    """Computes the AUC of the within-subgroup negative examples and the background positive examples."""
-    subgroup_negative_examples = df[df[subgroup] & ~df[label]]
-    non_subgroup_positive_examples = df[~df[subgroup] & df[label]]
-    examples = subgroup_negative_examples.append(non_subgroup_positive_examples)
-    return compute_auc(examples[label], examples[model_name])
+    @staticmethod
+    def compute_bias_metrics_for_model(dataset,
+                                       subgroups,
+                                       model,
+                                       label_col,
+                                       include_asegs=False):
+        """
+        Computes per-subgroup metrics for all subgroups and one model.
+        # bias_metrics_df = BiasBenchmark.compute_bias_metrics_for_model(validate_df, IDENTITY_COLUMNS, MODEL_NAME, TOXICITY_COLUMN)
+        :param dataset: prediction result
+        :param subgroups: all group names
+        :param model: my model name
+        :param label_col: target column name
+        :param include_asegs: ?
+        :return:
+        """
+        records = []
+        for subgroup in subgroups:
+            record = {
+                'subgroup': subgroup,
+                'subgroup_size': len(dataset[dataset[subgroup]])
+            }
+            record[SUBGROUP_AUC] = BiasBenchmark.compute_subgroup_auc(dataset, subgroup, label_col, model)
+            record[BPSN_AUC] = BiasBenchmark.compute_bpsn_auc(dataset, subgroup, label_col, model)
+            record[BNSP_AUC] = BiasBenchmark.compute_bnsp_auc(dataset, subgroup, label_col, model)
+            records.append(record)
+        return pd.DataFrame(records).sort_values('subgroup_auc', ascending=True)
 
+    # Calculate the final score
+    @staticmethod
+    def calculate_overall_auc(df, model_name):
+        true_labels = df[TOXICITY_COLUMN]
+        predicted_labels = df[model_name]
+        return metrics.roc_auc_score(true_labels, predicted_labels)
 
-def compute_bnsp_auc(df, subgroup, label, model_name):
-    """Computes the AUC of the within-subgroup positive examples and the background negative examples."""
-    subgroup_positive_examples = df[df[subgroup] & df[label]]
-    non_subgroup_negative_examples = df[~df[subgroup] & ~df[label]]
-    examples = subgroup_positive_examples.append(non_subgroup_negative_examples)
-    return compute_auc(examples[label], examples[model_name])
+    @staticmethod
+    def power_mean(series, p):
+        total = sum(np.power(series, p))
+        return np.power(total / len(series), 1 / p)
 
+    @staticmethod
+    def get_final_metric(bias_df, overall_auc, POWER=-5, OVERALL_MODEL_WEIGHT=0.25):
+        bias_score = np.average([
+            BiasBenchmark.power_mean(bias_df[SUBGROUP_AUC], POWER),
+            BiasBenchmark.power_mean(bias_df[BPSN_AUC], POWER),
+            BiasBenchmark.power_mean(bias_df[BNSP_AUC], POWER)
+        ])
+        return (OVERALL_MODEL_WEIGHT * overall_auc) + ((1 - OVERALL_MODEL_WEIGHT) * bias_score)
 
-def compute_bias_metrics_for_model(dataset,
-                                   subgroups,
-                                   model,
-                                   label_col,
-                                   include_asegs=False):
-    """Computes per-subgroup metrics for all subgroups and one model."""
-    records = []
-    for subgroup in subgroups:
-        record = {
-            'subgroup': subgroup,
-            'subgroup_size': len(dataset[dataset[subgroup]])
-        }
-        record[SUBGROUP_AUC] = compute_subgroup_auc(dataset, subgroup, label_col, model)
-        record[BPSN_AUC] = compute_bpsn_auc(dataset, subgroup, label_col, model)
-        record[BNSP_AUC] = compute_bnsp_auc(dataset, subgroup, label_col, model)
-        records.append(record)
-    return pd.DataFrame(records).sort_values('subgroup_auc', ascending=True)
+    @staticmethod
+    def convert_to_bool(df, col_name):
+        df[col_name] = np.where(df[col_name] >= 0.5, True, False)
 
+    @staticmethod
+    def convert_dataframe_to_bool(df):
+        bool_df = df.copy()
+        for col in [TARGET_COLUMN] + IDENTITY_COLUMNS:
+            BiasBenchmark.convert_to_bool(bool_df, col)
+        return bool_df
 
-# train_df, validate_df = model_selection.train_test_split(train, test_size=0.2)
-# validate_df[MODEL_NAME] = model.predict(pad_text(validate_df[TEXT_COLUMN], tokenizer))[:, 1]
-# bias_metrics_df = compute_bias_metrics_for_model(validate_df, IDENTITY_COLUMNS, MODEL_NAME, TOXICITY_COLUMN)
+    def calculate_benchmark(self, pred, model_name=MODEL_NAME):
+        self.validate_df[model_name] = pred  # prediction
+        bias_metrics_df = BiasBenchmark.compute_bias_metrics_for_model(self.validate_df,
+                                                                       IDENTITY_COLUMNS, MODEL_NAME, TOXICITY_COLUMN)
+        final_score = BiasBenchmark.get_final_metric(bias_metrics_df,
+                                                     BiasBenchmark.calculate_overall_auc(self.validate_df, MODEL_NAME))
 
-# Calculate the final score
-def calculate_overall_auc(df, model_name):
-    true_labels = df[TOXICITY_COLUMN]
-    predicted_labels = df[model_name]
-    return metrics.roc_auc_score(true_labels, predicted_labels)
-
-
-def power_mean(series, p):
-    total = sum(np.power(series, p))
-    return np.power(total / len(series), 1 / p)
-
-
-def get_final_metric(bias_df, overall_auc, POWER=-5, OVERALL_MODEL_WEIGHT=0.25):
-    bias_score = np.average([
-        power_mean(bias_df[SUBGROUP_AUC], POWER),
-        power_mean(bias_df[BPSN_AUC], POWER),
-        power_mean(bias_df[BNSP_AUC], POWER)
-    ])
-    return (OVERALL_MODEL_WEIGHT * overall_auc) + ((1 - OVERALL_MODEL_WEIGHT) * bias_score)
-
-
-# bias_metrics_df = compute_bias_metrics_for_model(validate_df, IDENTITY_COLUMNS, MODEL_NAME, TOXICITY_COLUMN)
-# get_final_metric(bias_metrics_df, calculate_overall_auc(validate_df, MODEL_NAME))
+        return final_score, bias_metrics_df
 
 # embedding vocab
 class EmbeddingHandler:
@@ -665,14 +700,20 @@ class EmbeddingHandler:
 
         return unknown_words
 
-    def get_identity_columns_as_np(self):
-        if not self._text_preprocessed:
+    def get_identity_train_data_df_idx(self):
+        """
+
+        :return: return pandas dataframe, to extract id, so train_X can be filtered
+        """
+        if not self._text_preprocessed: # then we might be restore from numpy pickle file, so still need to read csv
             self.read_csv(train_only=True)
             #for column in IDENTITY_COLUMNS :
             #    # it seems the .values will make a copy out, so it won't infect above sef.y_train
             #    self.train_df[column] = np.where(self.train_df[column] >= 0.5, True, False)
             #    # todo analyze >= 0.5 or not, what is the difference
-            return self.train_df[IDENTITY_COLUMNS].fillna(0).astype(np.float32).values # not binary
+            # refer to the paper, "This includes 450,000 comments annotated with the identities..."
+        train_y_identity_df = self.train_df[IDENTITY_COLUMNS].dropna(how='all').fillna(0).astype(np.float32)
+        return  self.x_train[train_y_identity_df.index], train_y_identity_df.values, train_y_identity_df.index# non-binary
 
     def text_preprocess(self):
         if self._text_preprocessed:

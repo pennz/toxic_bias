@@ -6,7 +6,6 @@ import tensorflow as tf
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Dense, Embedding, SpatialDropout1D, add, concatenate
 from tensorflow.keras.layers import CuDNNLSTM, Bidirectional, GlobalMaxPooling1D, GlobalAveragePooling1D
-from tensorflow.keras.preprocessing import text, sequence
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint
 import tensorflow.keras.backend as K
@@ -16,6 +15,7 @@ from sklearn.model_selection import KFold
 
 import data_prepare as d
 import os
+import pickle
 
 #NUM_MODELS = 2  # might be helpful but...
 
@@ -105,6 +105,7 @@ class KaggleKernel:
         self.train_y = None
         self.train_y_aux = None
         self.train_y_identity = None
+        self.train_X_identity = None
         self.to_predict_X = None
         self.embedding_matrix = None
 
@@ -121,13 +122,13 @@ class KaggleKernel:
             print("Prepare emb error, so loading data might be fine, and we continue")
 
     @staticmethod
-    def binary_accuracy_both_thr(y_true, y_pred, threshold=0.5):
+    def bin_acc_2(y_true, y_pred, threshold=0.5):
         threshold = math_ops.cast(threshold, y_pred.dtype)
         y_pred = math_ops.cast(y_pred > threshold, y_pred.dtype)
         y_true = math_ops.cast(y_true > threshold, y_pred.dtype)
         return K.mean(math_ops.equal(y_true, y_pred), axis=-1)
 
-    def build_identity_model(self, identity_out_num):
+    def build_identity_model(self, identity_out_num): # so nine model for them...
         #d.IDENTITY_COLUMNS  # with more than 500
         """build lstm model
 
@@ -138,13 +139,13 @@ class KaggleKernel:
         words = Input(shape=(None,))
         x = Embedding(*self.embedding_matrix.shape, weights=[self.embedding_matrix], trainable=False)(words)
         x = SpatialDropout1D(0.2)(x)
-        x = Bidirectional(CuDNNLSTM(LSTM_UNITS, return_sequences=True))(x)
+        x = Bidirectional(CuDNNLSTM(int(LSTM_UNITS//2), return_sequences=True))(x)
 
         hidden = concatenate([
             GlobalMaxPooling1D()(x),
             GlobalAveragePooling1D()(x),
         ])
-        hidden = add([hidden, Dense(DENSE_HIDDEN_UNITS, activation='relu')(hidden)])
+        hidden = add([hidden, Dense(int(DENSE_HIDDEN_UNITS//2), activation='relu')(hidden)])
         result = Dense(identity_out_num, activation='sigmoid')(hidden)
         # result_with_aux = Dense(num_aux_targets+1, activation='sigmoid')(hidden)
 
@@ -152,56 +153,77 @@ class KaggleKernel:
         # model = Model(inputs=words, outputs=result_with_aux)
         #model.compile(loss='binary_crossentropy', optimizer='adam')
 
-        model.compile(loss='binary_crossentropy', optimizer=Adam(0.005), metrics=[KaggleKernel.binary_accuracy_both_thr])
+        model.compile(loss='binary_crossentropy', optimizer=Adam(0.005), metrics=[KaggleKernel.bin_acc_2]) # need to improve#for target it should be fine, they are positive related
         return model
 
 
-    def run_identity_model(self, n_splits):
+    def run_identity_model(self, n_splits, features, labels, params):
 
-        splits = list(KFold(n_splits=n_splits, random_state=2019, shuffle=True).split(self.train_X)) # just use sklearn split to get id and it is fine. For text thing,
+        splits = list(KFold(n_splits=n_splits, random_state=2019, shuffle=True).split(features)) # just use sklearn split to get id and it is fine. For text thing,
         # memory is enough, fit in, so tfrecord not needed, just pickle and load it all to memory
-        # TODO condiser use train test split as
+        # TODO condiser use train test split as, so no need to run 5 times...
         '''
         train_df, validate_df = model_selection.train_test_split(train, test_size=0.2)
         print('%d train comments, %d validate comments' % (len(train_df), len(validate_df)))'''
+        prefix = params['prefix']
 
-        self.oof_preds = np.zeros((self.train_X.shape[0], 1+self.train_y_aux.shape[1]))
-        test_preds = np.zeros((self.to_predict_X.shape[0]))
+        #self.oof_preds = np.zeros(labels.shape)
+        #test_preds = np.zeros((self.to_predict_X.shape[0]))
+        for i, identity in enumerate(d.IDENTITY_COLUMNS):  # not sure the index is right or not, from pandas to numpy
+            for fold in range(n_splits):
+                K.clear_session() # so it will start over, across different fold, but we will load model form checkpoint
+                tr_ind, val_ind = splits[fold]
+                file_name = prefix+'_'+identity+f'_{fold}.hdf5'
 
-        for fold in range(n_splits):
-            K.clear_session() # so it will start over?
-            tr_ind, val_ind = splits[fold]
+                ckpt = ModelCheckpoint(file_name, save_best_only=True, verbose=1)
+                early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=1)
 
-            ckpt = ModelCheckpoint(f'gru_{fold}.hdf5', save_best_only=True, verbose=1)
-            early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=2)
 
-            model = self.build_identity_model(len(d.IDENTITY_COLUMNS))
-            self.model = model # for debug
-            model.fit(self.train_X[tr_ind],
-                      #self.train_y[tr_ind]>0.5,
-                      [self.train_y[tr_ind], self.train_y_aux[tr_ind]],
-                      batch_size=BATCH_SIZE,
-                      epochs=1,
-                      verbose=1,
-                      #validation_data=(self.train_X[val_ind], self.train_y[val_ind]>0.5),
-                      validation_data=(self.train_X[val_ind], [self.train_y[val_ind], self.train_y_aux[val_ind]]),
-                      callbacks=[
-                          LearningRateScheduler(
-                              lambda e: 5e-3 * (0.5 ** e),
-                              verbose=2
-                          ),
-                          early_stop,
-                          ckpt])
+                if not os.path.isfile(file_name):
+                    model = self.build_identity_model(1) # one model per identity...
+                    #model = self.build_identity_model(len(d.IDENTITY_COLUMNS))
+                else:
+                    print("restore from the model file")
+                    model = load_model(file_name,
+                                       custom_objects={'bin_acc_2': KaggleKernel.bin_acc_2})
+                    print("restore from the model file -> done\n\n\n\n\n")
+
+                self.model = model # for debug
+                model.fit(features[tr_ind],
+                          #self.train_y[tr_ind]>0.5,
+                          labels[tr_ind][:,i],
+                          batch_size=BATCH_SIZE,
+                          epochs=1,
+                          verbose=1,
+                          #validation_data=(self.train_X[val_ind], self.train_y[val_ind]>0.5),
+                          validation_data=(features[val_ind], labels[val_ind][:,i]),
+                          callbacks=[
+                              LearningRateScheduler(
+                                  lambda e: 5e-3 * (0.5 ** e),
+                                  verbose=1
+                              ),
+                              early_stop,
+                              ckpt])
+                break  # only run one fold...
 
             # schedule: a function that takes an epoch index as input(integer, indexed from 0) and current learning rate and returns a new learning rate as output(float).
             # verbose: int. 0: quiet, 1: update messages.
 
             #self._val_index = val_ind  # for debug
-            pred = model.predict(self.train_X[val_ind], verbose=1)
-            self.oof_preds[val_ind] += np.concatenate((pred[0], pred[1]), axis=1)
+            #pred = model.predict(self.train_X[val_ind], verbose=2)
+            #self.oof_preds[val_ind] += pred
 
-        import pickle
-        pickle.dump(self.oof_preds, open("predicts", 'wb'))
+        #print('Overall predict, binary accuracy')
+        #print(K.get_session().run(KaggleKernel.bin_acc_2(labels, self.oof_preds)).mean())
+        #print('Overall predict, binary accuracy, compare with all zero')
+        #print(K.get_session().run(KaggleKernel.bin_acc_2(labels, np.zeros(labels.shape))).mean())
+        """:(
+Overall predict, binary accuracy
+0.930945
+Overall predict, binary accuracy, compare with all zero
+0.9437693"""
+
+        pickle.dump(self.oof_preds, open(prefix+"predicts", 'wb'))
 
     def build_model(self, num_aux_targets):
         """build lstm model
@@ -265,7 +287,7 @@ class KaggleKernel:
         # model = Model(inputs=words, outputs=result_with_aux)
         #model.compile(loss='binary_crossentropy', optimizer='adam')
 
-        model.compile(loss='binary_crossentropy', optimizer=Adam(0.005), metrics=[KaggleKernel.binary_accuracy_both_thr])
+        model.compile(loss='binary_crossentropy', optimizer=Adam(0.005), metrics=[KaggleKernel.bin_acc_2])
         # for binary_crossentropy, the implementation is in  tensorflow/tensorflow/python/keras/backend.py
         #       bce = target * math_ops.log(output + epsilon())
         #       bce += (1 - target) * math_ops.log(1 - output + epsilon())
@@ -286,7 +308,7 @@ class KaggleKernel:
         return model
 
 
-    def lstm_model_run(self, final_train=False, n_splits=5):
+    def run_lstm_model(self, final_train=False, n_splits=5):
         #checkpoint_predictions = []
         #weights = []
         splits = list(KFold(n_splits=n_splits, random_state=2019, shuffle=True).split(self.train_X)) # just use sklearn split to get id and it is fine. For text thing,
@@ -312,7 +334,7 @@ class KaggleKernel:
             else:
                 print("restore from the model file")
                 model = load_model(h5_file,
-                                   custom_objects={'binary_accuracy_both_thr': KaggleKernel.binary_accuracy_both_thr})
+                                   custom_objects={'bin_acc_2': KaggleKernel.bin_acc_2})
                 print("restore from the model file -> done")
             self.model = model
             model.fit(self.train_X[tr_ind],
@@ -320,7 +342,7 @@ class KaggleKernel:
                       [self.train_y[tr_ind], self.train_y_aux[tr_ind]],
                       batch_size=BATCH_SIZE,
                       epochs=1,
-                      verbose=1,
+                      verbose=2,
                       #validation_data=(self.train_X[val_ind], self.train_y[val_ind]>0.5),
                       validation_data=(self.train_X[val_ind], [self.train_y[val_ind], self.train_y_aux[val_ind]]),
                       callbacks=[
@@ -377,29 +399,42 @@ class KaggleKernel:
 
     def prepare_identity_data(self):
         if self.train_y_identity is None:
-            self.train_y_identity = self.emb.get_identity_columns_as_np()
-        features = self.train_X
-        labels = self.train_y_identity
-        features_placeholder = tf.placeholder(features.dtype, features.shape)
-        labels_placeholder = tf.placeholder(labels.dtype, labels.shape)
-        ds = tf.data.Dataset.from_tensor_slices((features_placeholder, labels_placeholder))
-        iterator = ds.make_initializable_iterator()
-        next_element = iterator.get_next()
+            self.train_X_identity, self.train_y_identity = self.emb.get_identity_train_data()
+        return self.train_X_identity, self.train_y_identity
+        #features = self.train_X
+        #labels = self.train_y_identity
+        #features_placeholder = tf.placeholder(features.dtype, features.shape)
+        #labels_placeholder = tf.placeholder(labels.dtype, labels.shape)
+        #ds = tf.data.Dataset.from_tensor_slices((features_placeholder, labels_placeholder))
+        #iterator = ds.make_initializable_iterator()
+        #next_element = iterator.get_next()
 
-        sess = K.get_session()
-        itr = sess.run(iterator.initializer, feed_dict={
-            features_placeholder: features,
-            labels_placeholder: labels})
-        #i = 0
-        #while i < 10:
-        #    try:
-        #        el = sess.run(next_element)
-        #        print("should be fine to enumerate")
-        #        print(el)
-        #        i += 1
-        #    except tf.errors.OutOfRangeError:
-        #        break
-        return itr
+        #sess = K.get_session()
+        #itr = sess.run(iterator.initializer, feed_dict={
+        #    features_placeholder: features,
+        #    labels_placeholder: labels})
+        ##i = 0
+        ##while i < 10:
+        ##    try:
+        ##        el = sess.run(next_element)
+        ##        print("should be fine to enumerate")
+        ##        print(el)
+        ##        i += 1
+        ##    except tf.errors.OutOfRangeError:
+        ##        break
+        #return itr
+
+    def run_bias_auc_model(self):
+        """
+        need to prepare data, then train network to handle the bias thing
+        we use data (identity(given value), comment text) as feature, to recalculate target, and reduce bias
+
+        after build right model, then use predicted features to do the same prediction
+
+        :return:
+        """
+
+
 
 
 parser = argparse.ArgumentParser()
@@ -418,57 +453,28 @@ def main(argv):
     kernel = KaggleKernel()
 
     print("Will start load data")
-    kernel.emb = d.EmbeddingHandler()
     kernel.load_data()
-    print("load data done")
+    kernel.emb.read_csv(train_only=True)
 
-    my_checkpointing_config = tf.estimator.RunConfig(
-        save_checkpoints_secs=30 * 60,  # Save checkpoints every 20 minutes.
-        keep_checkpoint_max=1,
-        # save_checkpoints_steps = None
-    )
+    train_id_X, train_id_y, identity_idx = kernel.emb.get_identity_train_data_df_idx()  # to train the identity
+
+    kernel.judge = d.BiasBenchmark(kernel.emb.train_df.iloc[identity_idx])  # the idx happen to be the iloc value
+
+    pred = pickle.load(open('predicts', 'rb'))
+    kernel.pred = pred
+    value, bias_metrics = kernel.judge.calculate_benchmark(pred[identity_idx, 0])
+
+    print("load data done")
+    print(value)
+    print(bias_metrics)
+    return
+
+    kernel.run_identity_model(5, train_id_X, train_id_y, params={
+        'prefix': "/proc/driver/nvidia/identity"
+    })
 
     #model = kernel.build_model(len(kernel.train_y_aux[0]))
-    #kernel.lstm_model_run()
-
-    identity_classifier = tf.estimator.Estimator(
-        model_fn=identity_model,
-        params={
-            'identity_out_num': len(d.IDENTITY_COLUMNS),
-            'embedding_matrix': kernel.embedding_matrix,
-            'learning_rate': args.learning_rate,
-            'decay_steps': args.train_steps,
-            #'optimizer': tf.compat.v1.train.AdamOptimizer(
-            #learning_rate=tf.compat.v1.train.exponential_decay(
-            #learning_rate=args.learning_rate,
-            #global_step=tf.compat.v1.train.get_global_step(),
-            #decay_steps=args.train_steps,
-            #staircase=True,
-            #decay_rate=0.5))
-        },
-        config=my_checkpointing_config,
-        model_dir='/proc/driver/nvidia/identity-model') #warm_start_from="warm_model/model.ckpt-0")
-
-    identity_classifier.train(
-        input_fn=lambda: kernel.prepare_identity_data(),
-        steps=args.train_steps) # steps is one as we repeat data in input_fn
-    #kernel.lstm_model_run(args, my_checkpointing_config,
-    #               params={
-    #                   # Two hidden layers of 10 nodes each.
-    #                   'hidden_units': [],
-    #                   # The model must choose between 3 classes.
-    #                   'n_classes': 120,
-    #                   'batch_normalization': True,
-    #                   'learning_rate': args.learning_rate,
-    #                   'decay_steps': args.train_steps,
-    #                   'train_steps': args.train_steps,
-    #                   # 'optimizer': tf.compat.v1.train.AdamOptimizer(
-    #                   # learning_rate=tf.compat.v1.train.exponential_decay(
-    #                   # learning_rate=args.learning_rate,
-    #                   # global_step=tf.compat.v1.train.get_global_step(),
-    #                   # decay_steps=args.train_steps,
-    #                   # staircase=True,
-    #                   # decay_rate=0.5))
+    #kernel.run_lstm_model()
 
 
 

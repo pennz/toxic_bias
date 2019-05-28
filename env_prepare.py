@@ -72,6 +72,7 @@ def setup_gdrive():
     download_file_one_at_a_time("gdrive")
     s = """chmod +x ./gdrive
     mkdir $HOME/.gdrive 
+    chmod +x ./gdrive
     """
     run_commans(s)
     #download_file_one_at_a_time("token_v2.json", "$HOME/.gdrive")
@@ -122,7 +123,9 @@ def download_lstm_from_gdrive():
     run_commans(
         """
         ./gdrive download  -r 1KzpZTVJunVCSdOFvHZrA4O5nIeDp0gsl
-        ./gdrive download 1qOKKUaAanTegKyRqn5llE871pYxkCYOj 
+        ./gdrive download 1qOKKUaAanTegKyRqn5llE871pYxkCYOj  # predicts result (for target)
+        ./gdrive download 1x4sqy4nxX5l-r1nWlV-qU4PGn7J4rz59  # lstm model, to predict target
+        ./gdrive download 1Qg_xU3CWJx1670fF9qyUlETqB59nSgEu  # identity model
         mv lstm_data/* . && touch """+TFRECORD_FILDATALAG
         ,
         timeout=60*10
@@ -150,6 +153,6 @@ else:
         setup_gdrive()
         run_process_print('export PATH=$PWD:$PATH') # not helpful
         run_process_print('touch .env_setup_done')
-        get_ipython().reset()  # run in ipython
 
 
+#get_ipython().reset()  # run in ipython
