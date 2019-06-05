@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-from keras.models import Model,load_model
+from keras.models import Model, load_model
 from keras.engine.topology import Layer
 from keras.layers import Input, Dense, Embedding, SpatialDropout1D, add, concatenate, BatchNormalization
 from keras.layers import CuDNNLSTM, Bidirectional, GlobalMaxPooling1D, GlobalAveragePooling1D, PReLU
@@ -37,7 +37,7 @@ from keras import initializers, regularizers, constraints
 
 # Credits for https://www.kaggle.com/qqgeogor/keras-lstm-attention-glove840b-lb-0-043
 class AttentionRaffel(Layer):
-    def __init__(self, step_dim,
+    def __init__(self, step_dim=d.MAX_LEN,
                  W_regularizer=None, b_regularizer=None,
                  W_constraint=None, b_constraint=None,
                  bias=True, **kwargs):
@@ -64,6 +64,25 @@ class AttentionRaffel(Layer):
         self.step_dim = step_dim
         self.features_dim = 0
         super(AttentionRaffel,self).__init__(**kwargs)
+
+    def get_config(self):
+        config = {
+            'step_dim':
+                self.step_dim,
+            'bias':
+                self.bias,
+            'W_regularizer':
+                regularizers.serialize(self.W_regularizer),
+            'b_regularizer':
+                regularizers.serialize(self.b_regularizer),
+            'W_constraint':
+                constraints.serialize(self.W_constraint),
+            'b_constraint':
+                constraints.serialize(self.b_constraint),
+        }
+        base_config = super(AttentionRaffel, self).get_config()
+        del base_config['cell']
+        return dict(list(base_config.items()) + list(config.items()))
 
     def build(self, input_shape):
         # Input shape 3D tensor with shape: `(samples, steps, features)`.
@@ -491,8 +510,7 @@ class KaggleKernel:
         # model = Model(inputs=words, outputs=result_with_aux)
         # model.compile(loss='binary_crossentropy', optimizer='adam')
 
-        model.compile(loss='binary_crossentropy', optimizer=Adam(0.005), metrics=[
-            KaggleKernel.bin_prd_clsf_info])  # need to improve#for target it should be fine, they are positive related
+        model.compile(loss='binary_crossentropy', optimizer=Adam(0.005))  # need to improve#for target it should be fine, they are positive related
         return model
 
     def run_identity_model(self, n_splits, features, labels, params):
@@ -523,7 +541,7 @@ class KaggleKernel:
                 else:
                     logger.info("restore from the model file")
                     model = load_model(file_name,
-                                       custom_objects={'bin_prd_clsf_info': KaggleKernel.bin_prd_clsf_info})
+                                       custom_objects={'AttentionRaffel':AttentionRaffel})
                     logger.info("restore from the model file -> done\n\n\n\n\n")
 
                 self.model = model  # for debug
@@ -609,7 +627,6 @@ Overall predict, binary accuracy, compare with all zero
 
         return model
 
-
     def build_lstm_model(self, num_aux_targets):
         words = Input(shape=(None,))
         x = Embedding(*self.embedding_matrix.shape, weights=[self.embedding_matrix], trainable=False)(words)
@@ -667,7 +684,8 @@ Overall predict, binary accuracy, compare with all zero
         self.oof_preds = np.zeros((self.train_X.shape[0], 1 + self.train_y_aux.shape[1]))
         # test_preds = np.zeros((self.to_predict_X.shape[0]))
         prefix = params['prefix']
-        re_train = params['re-train']
+        re_train = params['re-start-train']
+        predict_only = params['predict-only']
 
         prefix += 'G{:.1f}'.format(FOCAL_LOSS_GAMMA)
 
@@ -676,9 +694,9 @@ Overall predict, binary accuracy, compare with all zero
             tr_ind, val_ind = splits[fold]
 
             if NO_AUX:
-                h5_file = prefix + 'lstm_NOAUX_' + f'{fold}.hdf5'  # we could load with file name, then remove and save to new one
+                h5_file = prefix + '_attention_lstm_NOAUX_' + f'{fold}.hdf5'  # we could load with file name, then remove and save to new one
             else:
-                h5_file = prefix + 'lstm_' + f'{fold}.hdf5'  # we could load with file name, then remove and save to new one
+                h5_file = prefix + '_attention_lstm_' + f'{fold}.hdf5'  # we could load with file name, then remove and save to new one
 
             ckpt = ModelCheckpoint(h5_file, save_best_only=True, verbose=1)
             early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=1)
@@ -709,7 +727,7 @@ Overall predict, binary accuracy, compare with all zero
                 logger.info('build model -> done')
 
             else:
-                model = load_model(h5_file, custom_objects={'binary_crossentropy_with_focal': binary_crossentropy_with_focal})
+                model = load_model(h5_file, custom_objects={'binary_crossentropy_with_focal': binary_crossentropy_with_focal, 'AttentionRaffel':AttentionRaffel})
                 starter_lr = starter_lr * LEARNING_RATE_DECAY_PER_EPOCH ** EPOCHS
                 self.model = model
                 logger.debug('restore from the model file {} -> done'.format(h5_file))
@@ -741,6 +759,8 @@ Overall predict, binary accuracy, compare with all zero
             #              early_stop,
             #              ckpt,
             #              tf_fit_batch_logger])
+            if predict_only:
+                break  # do not fit
             model.fit(self.train_X,
                       # self.train_y[tr_ind]>0.5,
                       self.train_y,
@@ -811,6 +831,11 @@ Overall predict, binary accuracy, compare with all zero
             'prediction': predictions
         })
         submission.to_csv('submission.csv', index=False)
+
+    def filter_out_second_stage_data(self, y_pred, subgroup='white'):
+        id_df = self.emb.get_identity_df()
+        id_df[subgroup].index  # index for this subgroup
+        self.train_y
 
     def prepare_identity_data(self):
         if self.train_y_identity is None:
@@ -933,6 +958,8 @@ LEARNING_RATE_DECAY_PER_EPOCH = 0.5
 
 IDENTITY_RUN = False
 TARGET_RUN = True
+PRD_ONLY = True
+RESTART_TRAIN = False
 
 NO_AUX = True
 Y_TRAIN_BIN = False  # with True, slightly worse
@@ -1069,10 +1096,14 @@ def main(argv):
 
     if TARGET_RUN:
         # if not os.path.isfile('predicts'):
+        predict_only = PRD_ONLY
         preds = kernel.run_lstm_model(predict_ones_with_identity=True, params={
             'prefix': "/proc/driver/nvidia/",
-            're-train': True  # will retrain every time if True,restore will report sensitivity problem now
+            're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
+            'predict-only': predict_only
         })
+        kernel.model  # improve the model with another data input,
+
         if NO_AUX:
             pickle.dump(preds, open("predicts", 'wb'))  # only the ones with identity is predicted
         else:

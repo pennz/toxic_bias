@@ -5,6 +5,9 @@ import os
 import gc
 import pickle
 from tensorflow.keras.preprocessing import text, sequence
+
+MAX_LEN = 180  # used in lstm definition ....
+
 import lstm
 
 # from tqdm import tqdm
@@ -12,7 +15,6 @@ import lstm
 
 INPUT_DATA_DIR = '../input/jigsaw-unintended-bias-in-toxicity-classification/'
 
-MAX_LEN = 180
 MODEL_NAME = "lstm"
 EMBEDDING_FILES = [
     '../input/glove840b300dtxt/glove.840B.300d.txt']  # ,
@@ -785,11 +787,7 @@ class EmbeddingHandler:
 
         return unknown_words
 
-    def get_identity_train_data_df_idx(self):
-        """
-
-        :return: return pandas dataframe, to extract id, so train_X can be filtered
-        """
+    def get_identity_df(self):
         if not self._text_preprocessed: # then we might be restore from numpy pickle file, so still need to read csv
             self.read_csv(train_only=True)
             #for column in IDENTITY_COLUMNS :
@@ -798,6 +796,10 @@ class EmbeddingHandler:
             #    # todo analyze >= 0.5 or not, what is the difference
             # refer to the paper, "This includes 450,000 comments annotated with the identities..."
         train_y_identity_df = self.train_df[IDENTITY_COLUMNS].dropna(how='all').fillna(0).astype(np.float32)
+        return train_y_identity_df
+
+    def get_identity_train_data_df_idx(self):
+        train_y_identity_df = self.get_identity_df()
         return  self.x_train[train_y_identity_df.index], train_y_identity_df.values, train_y_identity_df.index# non-binary
 
     def text_preprocess(self, target_binarize=True):
