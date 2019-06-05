@@ -40,7 +40,7 @@ def run_process_print(process_str,timeout=30):
 
 def pip_install_thing():
     to_installs = """pip install --upgrade pip
-    #pip install tensorflow-gpu==2.0.0-alpha0
+    #pip install -q tensorflow-gpu==2.0.0-alpha0
     #pip install drive-cli"""
     run_commans(to_installs, timeout=60*10)
 
@@ -122,20 +122,26 @@ def download_lstm_from_gdrive():
     """
     run_commans(
         """
-        ./gdrive download  -r 1KzpZTVJunVCSdOFvHZrA4O5nIeDp0gsl
-        ./gdrive download 1qOKKUaAanTegKyRqn5llE871pYxkCYOj  # predicts result (for target)
-        ./gdrive download 1x4sqy4nxX5l-r1nWlV-qU4PGn7J4rz59  # lstm model, to predict target
-        ./gdrive download 1Qg_xU3CWJx1670fF9qyUlETqB59nSgEu  # identity model
-        mv lstm_data/* . && touch """+TFRECORD_FILDATALAG
+        ./gdrive download 1glTXC4_DCE3DGJaGT721CcPAkE9RTkOi --path /proc/driver/nvidia/ # train
+        ./gdrive download 1mMwuBOLNqa_gaY2O7v3jpOk-DFgna-1E --path /proc/driver/nvidia/ # test
+        ./gdrive download 1WAyOTiG3rvsrp1MDeacwikoXTH7XqEtQ --path /proc/driver/nvidia/ # embedding
+        #./gdrive download   # predicts result (for target)
+        #./gdrive download   # identity model
+        #mv lstm_data/* . 
+        touch """+TFRECORD_FILDATALAG
         ,
         timeout=60*10
     )
 
-def update_src():
+def up():
     run_process_print('rm -rf __pycache__ /proc/driver/nvidia/identity-model/events*')
     download_file_one_at_a_time("data_prepare.py", overwrite=True)
     download_file_one_at_a_time("lstm.py", overwrite=True)
     download_file_one_at_a_time("env_prepare.py", overwrite=True)
+
+def exit00():
+    import os
+    os._exit(00)  # will make ipykernel restart
 
 quick = False
 if os.getcwd().find('lstm') > 0:
@@ -148,11 +154,12 @@ else:
             setup_kaggle()
             list_submisstion()
             pip_install_thing()
-            #download_lstm_from_gdrive()
-        update_src()
-        setup_gdrive()
+            setup_gdrive()
+            download_lstm_from_gdrive()
         run_process_print('export PATH=$PWD:$PATH') # not helpful
         run_process_print('touch .env_setup_done')
+
+up()  # this is needed always
 
 
 #get_ipython().reset()  # run in ipython

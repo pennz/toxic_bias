@@ -5,12 +5,14 @@ import os
 import gc
 import pickle
 from tensorflow.keras.preprocessing import text, sequence
+import lstm
 
 # from tqdm import tqdm
 # tqdm.pandas()
 
 INPUT_DATA_DIR = '../input/jigsaw-unintended-bias-in-toxicity-classification/'
 
+MAX_LEN = 180
 MODEL_NAME = "lstm"
 EMBEDDING_FILES = [
     '../input/glove840b300dtxt/glove.840B.300d.txt']  # ,
@@ -20,14 +22,14 @@ IDENTITY_COLUMNS = [
     'male', 'female', 'homosexual_gay_or_lesbian', 'christian', 'jewish',
     'muslim', 'black', 'white', 'psychiatric_or_mental_illness'
 ]  # features, meaning
-AUX_COLUMNS = ['target', 'severe_toxicity', 'obscene', 'identity_attack', 'insult', 'threat']
+AUX_COLUMNS = ['severe_toxicity', 'obscene', 'identity_attack', 'insult', 'threat', 'sexual_explicit']
 TEXT_COLUMN = 'comment_text'
 TARGET_COLUMN = 'target'
 TOXICITY_COLUMN = TARGET_COLUMN
 # CHARS_TO_REMOVE = '!"#$%&()*+,-./:;<=>?@[\\]^_`{|}~\t\n“”’\'∞θ÷α•à−β∅³π‘₹´°£€\×™√²—'
-TFRECORD_FILDATALAG = '.tf_record_saved'
+DATA_FILE_FLAG = '.tf_record_saved'
 
-BIN_FOLDER=""
+BIN_FOLDER="/proc/driver/nvidia/"
 # test_df_id = None # for generating result, need id
 E_M_FILE = BIN_FOLDER+"embedding.mat"
 DATA_TRAIN_FILE = BIN_FOLDER+"emb_train_features.bin"
@@ -175,13 +177,15 @@ def _load_embeddings_only_for_fasttext_crawl_avg(path):
 SUBGROUP_AUC = 'subgroup_auc'
 BPSN_AUC = 'bpsn_auc'  # stands for background positive, subgroup negative
 BNSP_AUC = 'bnsp_auc'  # stands for background negative, subgroup positive
+OVERALL_AUC = 'overall_auc'
 
 from sklearn import metrics
 
 class BiasBenchmark:
-    def __init__(self, train_df_id_na_dropped):
+    def __init__(self, train_df_id_na_dropped, threshold=0.5):
         # we can use this to divide subgroups(beside, we need to calculate only the 45000, with identities
-        self.validate_df = BiasBenchmark.convert_dataframe_to_bool(train_df_id_na_dropped[IDENTITY_COLUMNS+[TOXICITY_COLUMN]])
+        self.threshold = threshold
+        self.validate_df = BiasBenchmark.convert_dataframe_to_bool(train_df_id_na_dropped[IDENTITY_COLUMNS+[TOXICITY_COLUMN]], threshold)
 
     @staticmethod
     def compute_auc(y_true, y_pred):
@@ -191,9 +195,43 @@ class BiasBenchmark:
             return np.nan
 
     @staticmethod
-    def compute_subgroup_auc(df, subgroup, label, model_name):
+    def compute_predict_estimator(y_true, y_pred):
+        assert pd.core.dtypes.common.is_dtype_equal(y_true.dtype, np.dtype('bool'))
+
+        pos_cnt = sum(y_true)
+        neg_cnt = len(y_true) - pos_cnt
+
+        pred_pos_cnt = sum(y_pred > 0.5)
+        pred_neg_cnt = len(y_pred) - pred_pos_cnt
+
+        at_predict = y_pred[y_true]  # predictions for True actually, might predict to 0.4(bad)
+        af_predict = y_pred[~y_true]
+
+        return ((neg_cnt, pos_cnt, pos_cnt/(neg_cnt+pos_cnt)),
+        (pred_neg_cnt, pred_pos_cnt),
+        (len(af_predict), np.mean(af_predict), np.std(af_predict)),
+        (len(at_predict), np.mean(at_predict), np.std(at_predict)))
+
+
+
+    @staticmethod
+    def compute_subgroup_classify_detail(df, subgroup, label, model_name):
         """
         Compute AUC for spefic subgroup
+        :param df: dataframe which contains predictions for all subgroups
+        :param subgroup: compute AUC for this subgroup
+        :param label: target column name
+        :param model_name:
+        :return: just mean/std, for pos, neg, then we just use this information to make shift
+        """
+        subgroup_examples = df[df[subgroup]]  # innter df[subgroup] will get out boolean list, which is used to select this
+        # subgroup examples
+        return BiasBenchmark.compute_predict_estimator(subgroup_examples[label], subgroup_examples[model_name])
+
+    @staticmethod
+    def compute_subgroup_auc(df, subgroup, label, model_name):
+        """
+        Compute AUC for spefic subgroup. AUC only cares about ordering, not threshold
         :param df: dataframe which contains predictions for all subgroups
         :param subgroup: compute AUC for this subgroup
         :param label: target column name
@@ -205,12 +243,30 @@ class BiasBenchmark:
         return BiasBenchmark.compute_auc(subgroup_examples[label], subgroup_examples[model_name])
 
     @staticmethod
+    def compute_bpsn_classify_detail(df, subgroup, label, model_name):
+        """Computes the AUC of the within-subgroup negative examples and the background positive examples."""
+        subgroup_negative_examples = df[df[subgroup] & ~df[label]]
+        non_subgroup_positive_examples = df[~df[subgroup] & df[label]]  # background positive
+        examples = subgroup_negative_examples.append(non_subgroup_positive_examples)
+
+        # this example is background True positive, with subgroup True negative, and see our model's prediction's performance
+        return BiasBenchmark.compute_predict_estimator(examples[label], examples[model_name])
+
+    @staticmethod
     def compute_bpsn_auc(df, subgroup, label, model_name):
         """Computes the AUC of the within-subgroup negative examples and the background positive examples."""
         subgroup_negative_examples = df[df[subgroup] & ~df[label]]
         non_subgroup_positive_examples = df[~df[subgroup] & df[label]]
         examples = subgroup_negative_examples.append(non_subgroup_positive_examples)
         return BiasBenchmark.compute_auc(examples[label], examples[model_name])
+
+    @staticmethod
+    def compute_bnsp_classify_detail(df, subgroup, label, model_name):
+        """Computes the AUC of the within-subgroup positive examples and the background negative examples."""
+        subgroup_positive_examples = df[df[subgroup] & df[label]]
+        non_subgroup_negative_examples = df[~df[subgroup] & ~df[label]]
+        examples = subgroup_positive_examples.append(non_subgroup_negative_examples)
+        return BiasBenchmark.compute_predict_estimator(examples[label], examples[model_name])
 
     @staticmethod
     def compute_bnsp_auc(df, subgroup, label, model_name):
@@ -237,16 +293,27 @@ class BiasBenchmark:
         :return:
         """
         records = []
+        subgroup_distribution = []
         for subgroup in subgroups:
             record = {
+                'subgroup': subgroup,
+                'subgroup_size': len(dataset[dataset[subgroup]])
+            }
+            record_pn = {
                 'subgroup': subgroup,
                 'subgroup_size': len(dataset[dataset[subgroup]])
             }
             record[SUBGROUP_AUC] = BiasBenchmark.compute_subgroup_auc(dataset, subgroup, label_col, model)
             record[BPSN_AUC] = BiasBenchmark.compute_bpsn_auc(dataset, subgroup, label_col, model)
             record[BNSP_AUC] = BiasBenchmark.compute_bnsp_auc(dataset, subgroup, label_col, model)
+
+            record_pn[SUBGROUP_AUC] = BiasBenchmark.compute_subgroup_classify_detail(dataset, subgroup, label_col, model)
+            record_pn[BPSN_AUC] = BiasBenchmark.compute_bpsn_classify_detail(dataset, subgroup, label_col, model)
+            record_pn[BNSP_AUC] = BiasBenchmark.compute_bnsp_classify_detail(dataset, subgroup, label_col, model)
+
             records.append(record)
-        return pd.DataFrame(records).sort_values('subgroup_auc', ascending=True)
+            subgroup_distribution.append(record_pn)
+        return pd.DataFrame(records).sort_values('subgroup_auc', ascending=True), subgroup_distribution
 
     # Calculate the final score
     @staticmethod
@@ -254,6 +321,15 @@ class BiasBenchmark:
         true_labels = df[TOXICITY_COLUMN]
         predicted_labels = df[model_name]
         return metrics.roc_auc_score(true_labels, predicted_labels)
+
+    @staticmethod
+    def calculate_overall_auc_distribution(df, model_name):
+        info = dict()
+        info[OVERALL_AUC] = BiasBenchmark.calculate_overall_auc(df, model_name)
+        info['subgroup'] = 'overall'
+        info['subgroup_size'] = len(df)
+        info['distribution'] = BiasBenchmark.compute_predict_estimator(df[TOXICITY_COLUMN], df[model_name])
+        return info
 
     @staticmethod
     def power_mean(series, p):
@@ -270,24 +346,33 @@ class BiasBenchmark:
         return (OVERALL_MODEL_WEIGHT * overall_auc) + ((1 - OVERALL_MODEL_WEIGHT) * bias_score)
 
     @staticmethod
-    def convert_to_bool(df, col_name):
-        df[col_name] = np.where(df[col_name] >= 0.5, True, False)
+    def convert_to_bool(df, col_name, threshold=0.5):
+        df[col_name] = np.where(df[col_name] >= threshold, True, False)
 
     @staticmethod
-    def convert_dataframe_to_bool(df):
+    def convert_dataframe_to_bool(df, threshold):
         bool_df = df.copy()
-        for col in [TARGET_COLUMN] + IDENTITY_COLUMNS:
+        for col in IDENTITY_COLUMNS:
             BiasBenchmark.convert_to_bool(bool_df, col)
+        BiasBenchmark.convert_to_bool(bool_df,TARGET_COLUMN, threshold)
         return bool_df
 
     def calculate_benchmark(self, pred, model_name=MODEL_NAME):
-        self.validate_df[model_name] = pred  # prediction
-        bias_metrics_df = BiasBenchmark.compute_bias_metrics_for_model(self.validate_df,
-                                                                       IDENTITY_COLUMNS, MODEL_NAME, TOXICITY_COLUMN)
-        final_score = BiasBenchmark.get_final_metric(bias_metrics_df,
-                                                     BiasBenchmark.calculate_overall_auc(self.validate_df, MODEL_NAME))
+        """
 
-        return final_score, bias_metrics_df
+        :param pred:
+        :param model_name:
+        :return: final metric score, bias auc for subgroups, subgroup classification distribution details, overall auc
+        """
+        assert self.validate_df.shape[0] == len(pred)
+        self.validate_df[model_name] = pred  # prediction
+        bias_metrics_df, subgroup_distribution = BiasBenchmark.compute_bias_metrics_for_model(self.validate_df,
+                                                                       IDENTITY_COLUMNS, MODEL_NAME, TOXICITY_COLUMN)
+        overall_auc_dist = BiasBenchmark.calculate_overall_auc_distribution(self.validate_df, MODEL_NAME)
+        final_score = BiasBenchmark.get_final_metric(bias_metrics_df, overall_auc_dist[OVERALL_AUC])
+
+        return final_score, bias_metrics_df, subgroup_distribution, overall_auc_dist
+
 
 # embedding vocab
 class EmbeddingHandler:
@@ -572,7 +657,7 @@ class EmbeddingHandler:
                            8.65275000e-02, -4.02050195e-02, 6.80396250e-02, -2.37387500e-02, -1.00368828e-02]
 
     def __init__(self, prepare_emb=False):
-        self.MAX_LEN = 140  # check hist (log), you can know, most data is < 180 (99.1%), < 160 (95.2%), < 170 (97.4%), 140 (91.8%)
+        self.MAX_LEN = MAX_LEN  # check hist (log), you can know, most data is < 180 (99.1%), < 160 (95.2%), < 170 (97.4%), 140 (91.8%)
         self.embedding_matrix = None
         self.embedding_index = None
         self.vocab = None
@@ -592,7 +677,7 @@ class EmbeddingHandler:
 
         self.test_df_id = None  # only id series is needed for generating submission csv file
 
-        self.prepare_emb = prepare_emb
+        self.do_emb_matrix_preparation = prepare_emb
 
     def read_csv(self, train_only=False):
         if self.train_df is None:
@@ -715,7 +800,8 @@ class EmbeddingHandler:
         train_y_identity_df = self.train_df[IDENTITY_COLUMNS].dropna(how='all').fillna(0).astype(np.float32)
         return  self.x_train[train_y_identity_df.index], train_y_identity_df.values, train_y_identity_df.index# non-binary
 
-    def text_preprocess(self):
+    def text_preprocess(self, target_binarize=True):
+        lstm.logger.debug("Text preprocessing")
         if self._text_preprocessed:
             return  # just run once.... not a good flag
         self.spelling_normalize()  # will add 'treated_comment' column to df
@@ -723,14 +809,17 @@ class EmbeddingHandler:
         self.train_df[TEXT_COLUMN] = self.df['treated_comment'][:train_len]
         self.test_df[TEXT_COLUMN] = self.df['treated_comment'][train_len:]
 
-        x_train = self.train_df[TEXT_COLUMN].astype(str)
+        if target_binarize:
+            # todo consider multiple bin-split (one~ten star) for different subgroup
+            for column in IDENTITY_COLUMNS + AUX_COLUMNS + [TARGET_COLUMN]:
+                self.train_df[column] = np.where(self.train_df[column] >= 0.5, True, False)
+
+        # handle binary target data
         self.y_train = self.train_df[TARGET_COLUMN].values
         self.y_aux_train = self.train_df[AUX_COLUMNS].values
-        x_test = self.test_df[TEXT_COLUMN].astype(str)
 
-        for column in IDENTITY_COLUMNS + [TARGET_COLUMN]:  # TODO test with non-binary, ?will this change self.y_train?
-            # it seems the .values will make a copy out, so it won't infect above sef.y_train
-            self.train_df[column] = np.where(self.train_df[column] >= 0.5, True, False)
+        x_train = self.train_df[TEXT_COLUMN].astype(str)
+        x_test = self.test_df[TEXT_COLUMN].astype(str)
 
         # tokenizer = text.Tokenizer(filters=CHARS_TO_REMOVE)
         tokenizer = text.Tokenizer()
@@ -742,8 +831,9 @@ class EmbeddingHandler:
 
         self.tokenizer = tokenizer
         self._text_preprocessed = True
+        lstm.logger.debug("Text preprocessing Done")
 
-    def build_matrix_modify_comment(self, path):
+    def build_matrix_modify_comment(self, path, emb_matrix_exsited):
         """
         build embedding matrix given tokenizer word_index and pre-trained embedding file
 
@@ -751,7 +841,15 @@ class EmbeddingHandler:
         :param path: path to load pre-trained embedding
         :return: embedding matrix
         """
+        if emb_matrix_exsited:
+            lstm.logger.debug("Start cooking embedding matrix and train/test data: only train/test data")
+            self.text_preprocess()
+            return  # only need process text
+
+        lstm.logger.debug("Start cooking embedding matrix and train/test data")
+
         embedding_index = EmbeddingHandler.load_embeddings(path)
+
         self.build_vocab(self.df[TEXT_COLUMN])
         self.add_lower_to_embedding(embedding_index, self.vocab)
         self.text_preprocess()
@@ -771,6 +869,9 @@ class EmbeddingHandler:
                 # for unk
                 # https://stackoverflow.com/questions/49239941/what-is-unk-in-the-pretrained-glove-vector-files-e-g-glove-6b-50d-txt
                 embedding_matrix[i] = avg_vector
+
+        lstm.logger.debug("Done cooking embedding matrix and train/test data")
+
         return embedding_matrix
 
     @staticmethod
@@ -783,18 +884,39 @@ class EmbeddingHandler:
         with open(path, 'r') as f:
             return dict(EmbeddingHandler.get_coefs(*line.strip().split(' ')) for line in f)
 
-    def prepare_tfrecord_data(self, dump=True):
+    def prepare_tfrecord_data(self, dump=True, train_test_data=True, embedding=True, action=None):  # 和上一级有耦合，先这样吧
+        if action is not None and action == lstm.CONVERT_DATA_Y_NOT_BINARY:  # unpicker, change y
+            self.read_csv(train_only=True)
+            if not os.path.isfile(DATA_FILE_FLAG):
+                raise FileNotFoundError("Pickle files should be present")
 
-        if os.path.isfile(TFRECORD_FILDATALAG) and not self.prepare_emb:
+            self.y_train = self.train_df[TARGET_COLUMN].values  # not preprocessed, so still be float value
+
+            if dump:
+                train_data = zip(self.x_train, self.y_train, self.y_aux_train)
+                pickle.dump(train_data, open(DATA_TRAIN_FILE, 'wb'))  # overwrite with new
+
+                # file flag
+                with open(DATA_FILE_FLAG, 'wb') as f:
+                    f.write(bytes("", 'utf-8'))
+            return self.x_train, self.y_train, self.y_aux_train, self.x_test, self.embedding_matrix
+
+        self.read_csv()
+
+        if os.path.isfile(DATA_FILE_FLAG) and not self.do_emb_matrix_preparation and not train_test_data and not embedding:
             # just recover from record file
             raise Exception('tfrecord should already existed, please check')
 
-        self.embedding_matrix = np.concatenate(
-            [self.build_matrix_modify_comment(f) for f in EMBEDDING_FILES], axis=-1)
+        if embedding:
+            lstm.logger.debug("Still need build embedding matrix")
+            self.embedding_matrix = np.concatenate(
+                [self.build_matrix_modify_comment(f, emb_matrix_exsited=False) for f in EMBEDDING_FILES], axis=-1)
+            del self.tokenizer
+            gc.collect()
+            self.tokenizer = None
+        elif train_test_data: # no need to rebuild emb matrix, only need train test data
+            [self.build_matrix_modify_comment(f, emb_matrix_exsited=True) for f in EMBEDDING_FILES]
 
-        del self.tokenizer
-        gc.collect()
-        self.tokenizer = None
         # weights for calculating loss, need to check why works, just some random gussing?
         # we can check the data distribution, then try to improve this
         # sample_weights = np.ones(len(x_train), dtype=np.float32)
@@ -811,20 +933,32 @@ class EmbeddingHandler:
         # global embedding_matrix
 
         if dump:
-            pickle.dump(self.embedding_matrix, open(E_M_FILE, 'wb'))
-            pickle.dump(train_data, open(DATA_TRAIN_FILE, 'wb'))
-            pickle.dump(self.x_test, open(DATA_TEST_FILE, 'wb'))
+            if embedding:
+                pickle.dump(self.embedding_matrix, open(E_M_FILE, 'wb'))
+            if train_test_data:
+                pickle.dump(train_data, open(DATA_TRAIN_FILE, 'wb'))
+                pickle.dump(self.x_test, open(DATA_TEST_FILE, 'wb'))
 
             # file flag
-            with open(TFRECORD_FILDATALAG, 'wb') as f:
+            with open(DATA_FILE_FLAG, 'wb') as f:
                 f.write(bytes("", 'utf-8'))
         return self.x_train, self.y_train, self.y_aux_train, self.x_test, self.embedding_matrix
 
-    def load_data(self):
+    def data_prepare(self, action=None):
         """Returns the iris dataset as (train_x, train_y), (test_x, test_y).
         we load this from the tfrecord, maybe save the ones just after embedding, so it can be faster
         """
-        if os.path.isfile(TFRECORD_FILDATALAG) and not self.prepare_emb:
+        if action is not None: lstm.logger.debug("{} in data preparation".format(action))
+
+        if os.path.isfile(DATA_FILE_FLAG) and not self.do_emb_matrix_preparation:
+            # global embedding_matrix
+            self.embedding_matrix = pickle.load(open(E_M_FILE, "rb"))
+
+            if action is not None:  # exist data, need to convert data
+                lstm.logger.debug(action)
+                if action == lstm.CONVERT_TRAIN_DATA:
+                    self.prepare_tfrecord_data(train_test_data=True, embedding=False, action=action) # train data will rebuild, so we put it before read from pickle
+
             # just recover from record file
             data_train = pickle.load(open(DATA_TRAIN_FILE, "rb"))  # (None, 2048)
             self.x_test = pickle.load(open(DATA_TEST_FILE, "rb"))  # (None, 2048) 2048 features from xception net
@@ -833,15 +967,22 @@ class EmbeddingHandler:
             self.x_train, self.y_train, self.y_aux_train = np.array(self.x_train), np.array(self.y_train), np.array(
                 self.y_aux_train)
 
-            # global embedding_matrix
-            self.embedding_matrix = pickle.load(open(E_M_FILE, "rb"))
             # global test_df_id
             # test_df_id = pd.read_csv('../input/jigsaw-unintended-bias-in-toxicity-classification/test.csv').id
 
             self.test_df_id = pd.read_csv(INPUT_DATA_DIR + 'test.csv').id  # only id series is needed for generating submission csv file
 
+            if action is not None:  # exist data, need to convert data, so put after read from pickle
+                if action == lstm.CONVERT_DATA_Y_NOT_BINARY:
+                    self.prepare_tfrecord_data(train_test_data=False, embedding=False, action=action)  # train_test_data=False just not rebuild words, the y still need to change
+
             return self.x_train, self.y_train, self.y_aux_train, self.x_test, self.embedding_matrix
         else:
             # (x_train, y_train, y_aux_train), x_test = prepare_tfrecord_data()
-            self.read_csv()
-            return self.prepare_tfrecord_data()
+            if action is not None:
+                if action == lstm.CONVERT_TRAIN_DATA:
+                    self.embedding_matrix = pickle.load(open(E_M_FILE, "rb"))
+                    lstm.logger.debug("Only build train test data, embedding loading from pickle")
+                    return self.prepare_tfrecord_data(embedding=False, action=action)
+            else:
+                return self.prepare_tfrecord_data(embedding=True)

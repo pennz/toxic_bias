@@ -45,10 +45,63 @@ for bold ones, they are the identities with more than 500
  examples in the test set, and will be included in the evaluation
  calculation. i.e., subgroups, so, 
  
-*todo* for these subgroups, we can handle
+# todo
+ 
+*todo* for these subgroups, we can handle !!!!!
+we check one identity as example! white -> 
+so steps:
+1. filter out white data,25082 (80/20), only the ones with large difference (it just like ensemble learning)(should work i think)
+2. continue to train
+3. retest , check for this identity( and others), what is the effect (to speed things 20, all 20% test set)
+4. re-iterate
+
+
  differently? not just see gay and then treat it as toxic
  
  so we can use network for different subgroup? and given them different weight?
+ 
+ Added attention, simple attention, as our target is not sequential data, so only one
+ attention unit
+ 
+*add back aux* might contain useful information, so make the model learn this task better, understand the information better
+ 
+*add dann*
+
+## what we found
+for different subgroup, when you change the threshold, the auc will change 
+for some subgroup. 
+
+For example: for male subgroup
+threshold - subgroup_auc:
+0.5 - 0.918
+0.6 - 0.923
+0.7 - 0.932
+
+as we change the threshold for deciding actual pos/neg, the predicted value
+is not changed, it means our model, not mapping text to toxity very will?
+Ans: **no**, just threshold larger, the ones above threshold should really toxic, 
+so it is easier for our model to predict, so the score is high
+### loss function
+if target value is float, not binary(True/False), then the 
+BCE - ( y*log(y_pred) + (1-y)*log(1-y_pred) ) would not be suitable,
+for example, when y=0.2, y_pred=0.6, the loss is -(0.2\*log(0.6)+0.8\*(log0.4)) will will be smaller than binary one
+( - log(0.6) < - log(0.4))
+(for binary, it will be -log(0.4), large, and the derivative pass back: )
+For derivative:
+it is dL/L(logits) = logits - y. so for binary, it will easily pushed to
+two ends, but for linear, 
+
+### loss and Z, sigmoid(z)
+we can debug, to check the Z distribution, and to design our loss function.
+
+## need to consider group information, and improve the bias thing
+thoughts:
+1. training the wrong ones, so the model will know about bias and try to correct then 
+    1. for this, the paper use logic pair, so network will learn that it means the same, to
+    reduce the bias by learn they are the same. But this needs many handpicked example, and
+    need to pay attention to the asymmetric pair. Really hand picked.
+    2. how about we select the ones not learned well, just train them...
+2. just remove all the identity related information? 
  
 ## votes
 votes by netizens, can be helpful too, (don't know to what extent) but how do we use this?
@@ -115,6 +168,15 @@ learn from the attention model, use small network to learn loss function composi
 *Q how it is caculated?*
 Still?
 
+How to take subgroup into account? into our loss function
+or weights different data?
+
+So our problem: for the ones with 
+(AUC problem, not the threshold problem), but subgroup indeed will affect 
+the final ones. 
+The logic order is reversed in my previous thoughts. Subgroup is not existed 
+when training the model.
+
 ```python
       bce = target * math_ops.log(output + epsilon())
       bce += (1 - target) * math_ops.log(1 - output + epsilon())
@@ -122,3 +184,54 @@ return -bce # binary cross entropy
 ```
 like wide and deep? just different feature, different combination
 but for this bias thing, should use the group information!
+
+
+## problems
+non-binarized ones, on focal loss, no weights for unbalance
+### comparison binary or not
+
+subgroup
+
+    male  0.9194	(0.09576205909252167, 0.1543089598417282)	(0.5339319109916687, 0.29221320152282715)
+    femal 0.9194	(0.08456523716449738, 0.14278335869312286)	(0.5135778188705444, 0.2955287992954254)
+    homos 0.8358	(0.197971910238266, 0.17625105381011963)	(0.4901445806026459, 0.24800816178321838)
+    chris 0.9251	(0.057429440319538116, 0.11492059379816055)	(0.429908812046051, 0.2790357172489166)
+    jewis 0.8835	(0.11788886785507202, 0.14946062862873077)	(0.4652176797389984, 0.2746000289916992)
+    musli 0.854	(0.16775627434253693, 0.1603298932313919)	(0.47988712787628174, 0.26370587944984436)
+    black 0.8358	(0.2118678092956543, 0.18535982072353363)	(0.5275276899337769, 0.265418142080307)
+    white 0.8442	(0.19593653082847595, 0.1829969435930252)	(0.5289711356163025, 0.27579113841056824)
+    psych 0.9149	(0.11351379752159119, 0.15796461701393127)	(0.5642567276954651, 0.2966223359107971)
+    
+bpsn
+    
+    male  0.9131	(0.09576205909252167, 0.1543089598417282)	(0.5362406373023987, 0.30515122413635254)
+    femal 0.9253	(0.08456523716449738, 0.14278335869312286)	(0.5401219129562378, 0.30457088351249695)
+    homos 0.8196	(0.197971910238266, 0.17625105381011963)	(0.5392336249351501, 0.3066760003566742)
+    chris 0.9511	(0.057429440319538116, 0.11492059379816055)	(0.5450959205627441, 0.3035833537578583)
+    jewis 0.895	(0.11788886785507202, 0.14946062862873077)	(0.5378623008728027, 0.30382877588272095)
+    musli 0.849	(0.16775627434253693, 0.1603298932313919)	(0.5423970818519592, 0.306907594203949)
+    black 0.8044	(0.2118678092956543, 0.18535982072353363)	(0.5368527173995972, 0.30728623270988464)
+    white 0.8185	(0.19593653082847595, 0.1829969435930252)	(0.537156879901886, 0.30799585580825806)
+    psych 0.8979	(0.11351379752159119, 0.15796461701393127)	(0.5352566242218018, 0.30342885851860046)
+    
+bnsp
+    
+    male  0.95	(0.060392823070287704, 0.1260470747947693)	(0.5339319109916687, 0.29221320152282715)
+    femal 0.9419	(0.061103250831365585, 0.1274721622467041)	(0.5135778188705444, 0.2955287992954254)
+    homos 0.9544	(0.06110946834087372, 0.12693394720554352)	(0.4901445806026459, 0.24800816178321838)
+    chris 0.9167	(0.06487572938203812, 0.13133881986141205)	(0.429908812046051, 0.2790357172489166)
+    jewis 0.9379	(0.06313309073448181, 0.12918923795223236)	(0.4652176797389984, 0.2746000289916992)
+    musli 0.9509	(0.059209901839494705, 0.12605734169483185)	(0.47988712787628174, 0.26370587944984436)
+    black 0.9595	(0.059782497584819794, 0.1251622885465622)	(0.5275276899337769, 0.265418142080307)
+    white 0.9596	(0.0571410246193409, 0.12244977802038193)	(0.5289711356163025, 0.27579113841056824)
+    psych 0.9531	(0.06357372552156448, 0.12931282818317413)	(0.5642567276954651, 0.2966223359107971)
+
+
+bnsp better than bpsn, it means:
+backgroup True negtive, Positive ones mapped to larger ones, 
+but subgroup True negtive, will be predicted to higher probility, make it hard to differ with backgroup True positive
+
+
+## useful links
+- https://www.cerebriai.com/testing-for-overfitting-in-binary-classifiers/
+- [keras custom losses, aux output](https://www.pyimagesearch.com/2018/06/04/keras-multiple-outputs-and-multiple-losses/)
