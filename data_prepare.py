@@ -13,7 +13,6 @@ import lstm
 # from tqdm import tqdm
 # tqdm.pandas()
 
-INPUT_DATA_DIR = '../input/jigsaw-unintended-bias-in-toxicity-classification/'
 
 MODEL_NAME = "lstm"
 EMBEDDING_FILES = [
@@ -359,18 +358,23 @@ class BiasBenchmark:
         BiasBenchmark.convert_to_bool(bool_df,TARGET_COLUMN, threshold)
         return bool_df
 
-    def calculate_benchmark(self, pred, model_name=MODEL_NAME):
+    def calculate_benchmark(self, pred=None, validate_df=None, model_name=MODEL_NAME):
         """
 
         :param pred:
         :param model_name:
         :return: final metric score, bias auc for subgroups, subgroup classification distribution details, overall auc
         """
-        assert self.validate_df.shape[0] == len(pred)
-        self.validate_df[model_name] = pred  # prediction
-        bias_metrics_df, subgroup_distribution = BiasBenchmark.compute_bias_metrics_for_model(self.validate_df,
-                                                                       IDENTITY_COLUMNS, MODEL_NAME, TOXICITY_COLUMN)
-        overall_auc_dist = BiasBenchmark.calculate_overall_auc_distribution(self.validate_df, MODEL_NAME)
+        if validate_df is None:
+            print('In caculating benchmark, the validate_df passed in None, use default validate_df, with given pred')
+            validate_df = self.validate_df
+            assert validate_df.shape[0] == len(pred)
+            validate_df[model_name] = pred  # prediction
+
+        print('In caculating benchmark...')
+        bias_metrics_df, subgroup_distribution = BiasBenchmark.compute_bias_metrics_for_model(validate_df,
+                                                                       IDENTITY_COLUMNS, model_name, TOXICITY_COLUMN)
+        overall_auc_dist = BiasBenchmark.calculate_overall_auc_distribution(validate_df, model_name)
         final_score = BiasBenchmark.get_final_metric(bias_metrics_df, overall_auc_dist[OVERALL_AUC])
 
         return final_score, bias_metrics_df, subgroup_distribution, overall_auc_dist
@@ -663,6 +667,7 @@ class EmbeddingHandler:
         self.embedding_matrix = None
         self.embedding_index = None
         self.vocab = None
+        self.INPUT_DATA_DIR = '../input/jigsaw-unintended-bias-in-toxicity-classification/'
 
         self.test_df = None
         self.train_df = None
@@ -683,9 +688,9 @@ class EmbeddingHandler:
 
     def read_csv(self, train_only=False):
         if self.train_df is None:
-            self.train_df = pd.read_csv(INPUT_DATA_DIR + 'train.csv')
+            self.train_df = pd.read_csv(self.INPUT_DATA_DIR + 'train.csv')
         if not train_only:
-            self.test_df = pd.read_csv(INPUT_DATA_DIR + 'test.csv')
+            self.test_df = pd.read_csv(self.INPUT_DATA_DIR + 'test.csv')
             self.test_df_id = self.test_df.id  # only id series is needed for generating submission csv file
             self.df = pd.concat([self.train_df.iloc[:, [0, 2]], self.test_df.iloc[:, :2]])
 
@@ -800,7 +805,7 @@ class EmbeddingHandler:
 
     def get_identity_train_data_df_idx(self):
         train_y_identity_df = self.get_identity_df()
-        return  self.x_train[train_y_identity_df.index], train_y_identity_df.values, train_y_identity_df.index# non-binary
+        return self.x_train[train_y_identity_df.index], train_y_identity_df.values, train_y_identity_df.index# non-binary
 
     def text_preprocess(self, target_binarize=True):
         lstm.logger.debug("Text preprocessing")
@@ -954,10 +959,12 @@ class EmbeddingHandler:
 
         if os.path.isfile(DATA_FILE_FLAG) and not self.do_emb_matrix_preparation:
             # global embedding_matrix
-            self.embedding_matrix = pickle.load(open(E_M_FILE, "rb"))
+            if action is not None and action == lstm.DATA_ACTION_NO_NEED_LOAD_EMB_M:
+                self.embedding_matrix = None
+            else:
+                self.embedding_matrix = pickle.load(open(E_M_FILE, "rb"))
 
             if action is not None:  # exist data, need to convert data
-                lstm.logger.debug(action)
                 if action == lstm.CONVERT_TRAIN_DATA:
                     self.prepare_tfrecord_data(train_test_data=True, embedding=False, action=action) # train data will rebuild, so we put it before read from pickle
 
@@ -972,7 +979,11 @@ class EmbeddingHandler:
             # global test_df_id
             # test_df_id = pd.read_csv('../input/jigsaw-unintended-bias-in-toxicity-classification/test.csv').id
 
-            self.test_df_id = pd.read_csv(INPUT_DATA_DIR + 'test.csv').id  # only id series is needed for generating submission csv file
+            try:
+                self.test_df_id = pd.read_csv(self.INPUT_DATA_DIR + 'test.csv').id  # only id series is needed for generating submission csv file
+            except FileNotFoundError:
+                self.INPUT_DATA_DIR = '../input/'
+                self.test_df_id = pd.read_csv(self.INPUT_DATA_DIR + 'test.csv').id  # only id series is needed for generating submission csv file
 
             if action is not None:  # exist data, need to convert data, so put after read from pickle
                 if action == lstm.CONVERT_DATA_Y_NOT_BINARY:

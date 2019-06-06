@@ -125,6 +125,8 @@ def download_lstm_from_gdrive():
         ./gdrive download 1glTXC4_DCE3DGJaGT721CcPAkE9RTkOi --path /proc/driver/nvidia/ # train
         ./gdrive download 1mMwuBOLNqa_gaY2O7v3jpOk-DFgna-1E --path /proc/driver/nvidia/ # test
         ./gdrive download 1WAyOTiG3rvsrp1MDeacwikoXTH7XqEtQ --path /proc/driver/nvidia/ # embedding
+        ./gdrive download 1d_2uUzStUhuzErWAcIIk2TuzA1bFyKN7  # predicts (no res)
+        ./gdrive download 1VFYcLECsE2BAYoe_q2o4a7aMT3OTp5S6 --path /proc/driver/nvidia/ # model
         #./gdrive download   # predicts result (for target)
         #./gdrive download   # identity model
         #mv lstm_data/* . 

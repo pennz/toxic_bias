@@ -3,10 +3,11 @@ import argparse
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+from tensorflow import Session, Graph
 
 from keras.models import Model, load_model
 from keras.engine.topology import Layer
-from keras.layers import Input, Dense, Embedding, SpatialDropout1D, add, concatenate, BatchNormalization
+from keras.layers import Input, Dense, Embedding, SpatialDropout1D, add, concatenate, BatchNormalization, Activation
 from keras.layers import CuDNNLSTM, Bidirectional, GlobalMaxPooling1D, GlobalAveragePooling1D, PReLU
 from keras.optimizers import Adam
 from keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint, ProgbarLogger
@@ -22,6 +23,9 @@ import data_prepare as d
 import os
 import pickle
 import logging
+import copy
+
+from IPython.core.debugger import set_trace
 
 # NUM_MODELS = 2  # might be helpful but...
 
@@ -29,9 +33,10 @@ import logging
 BATCH_SIZE = 1024  # for cloud server runing
 LSTM_UNITS = 128
 DENSE_HIDDEN_UNITS = 4 * LSTM_UNITS
+RES_DENSE_HIDDEN_UNITS = 5
+
 EPOCHS = 4  # 4 seems good for current setting, more training will help for the final score
 
-kernel = None
 
 from keras import initializers, regularizers, constraints
 
@@ -81,7 +86,7 @@ class AttentionRaffel(Layer):
                 constraints.serialize(self.b_constraint),
         }
         base_config = super(AttentionRaffel, self).get_config()
-        del base_config['cell']
+        if 'cell' in base_config: del base_config['cell']
         return dict(list(base_config.items()) + list(config.items()))
 
     def build(self, input_shape):
@@ -224,7 +229,7 @@ class NBatchProgBarLogger(tf.keras.callbacks.ProgbarLogger):
     def __init__(self, count_mode='samples', stateful_metrics=None, display_per_batches=1000, verbose=1,
                  early_stop=False, patience_displays=0, epsilon=1e-7):
         super(NBatchProgBarLogger, self).__init__(count_mode, stateful_metrics)
-        self.display_per_batches = display_per_batches
+        self.display_per_batches = 1 if display_per_batches < 1 else display_per_batches
         self.step_idx = 0  # across epochs
         self.display_idx = 0  # across epochs
         self.verbose = verbose
@@ -295,7 +300,6 @@ class NBatchProgBarLogger(tf.keras.callbacks.ProgbarLogger):
 class KaggleKernel:
     def __init__(self, action=None):
         self.model = None
-        self._val_index = None  # for debug
         self.emb = None
         self.train_X = None
         self.train_y = None
@@ -305,6 +309,9 @@ class KaggleKernel:
         self.to_predict_X = None
         self.embedding_matrix = None
         self.identity_idx = None
+        self.id_validate_df = None
+
+        self.judge = None  # for auc metrics
 
         self.oof_preds = None
         self.load_data(action)
@@ -615,7 +622,8 @@ Overall predict, binary accuracy, compare with all zero
             if with_BN: hidden = BatchNormalization()(hidden)
             hidden = add([hidden, Dense(DENSE_HIDDEN_UNITS, activation=activate_type)(hidden)])
 
-        result = Dense(1, activation='sigmoid')(hidden)
+        logit = Dense(1, activation=None)(hidden)
+        result = Activation('sigmoid')(logit)
 
         if with_aux:
             aux_result = Dense(num_aux_targets, activation='sigmoid')(hidden)
@@ -623,7 +631,7 @@ Overall predict, binary accuracy, compare with all zero
         else:
             model = Model(inputs=words, outputs=result)
 
-        model.compile(loss=loss, optimizer=Adam(0.005, amsgrad=True), metrics=metrics)
+        model.compile(loss=loss, optimizer='adam', metrics=metrics)
 
         return model
 
@@ -761,6 +769,8 @@ Overall predict, binary accuracy, compare with all zero
             #              tf_fit_batch_logger])
             if predict_only:
                 break  # do not fit
+            prog_bar_logger = NBatchProgBarLogger(display_per_batches=int(1300000 / 30 / BATCH_SIZE), early_stop=True,
+                                      patience_displays=3)
             model.fit(self.train_X,
                       # self.train_y[tr_ind]>0.5,
                       self.train_y,
@@ -832,37 +842,242 @@ Overall predict, binary accuracy, compare with all zero
         })
         submission.to_csv('submission.csv', index=False)
 
-    def filter_out_second_stage_data(self, y_pred, subgroup='white'):
-        id_df = self.emb.get_identity_df()
-        id_df[subgroup].index  # index for this subgroup
-        self.train_y
+    def prepare_second_stage_data_index(self, y_pred, subgroup='white', only_false_postitive=False, n_splits=5):
+        """
 
-    def prepare_identity_data(self):
-        if self.train_y_identity is None:
-            self.train_X_identity, self.train_y_identity = self.emb.get_identity_train_data()
-        return self.train_X_identity, self.train_y_identity
-        # features = self.train_X
-        # labels = self.train_y_identity
-        # features_placeholder = tf.placeholder(features.dtype, features.shape)
-        # labels_placeholder = tf.placeholder(labels.dtype, labels.shape)
-        # ds = tf.data.Dataset.from_tensor_slices((features_placeholder, labels_placeholder))
-        # iterator = ds.make_initializable_iterator()
-        # next_element = iterator.get_next()
+        :param y_pred: # might needed, compare pred and target, weight the examples
+        :param subgroup:
+        :param only_false_postitive: only train the ones with higher then actual ones?
+        :return: X, y pair
+        """
+        df = self.id_validate_df
+        subgroup_df = df[df[subgroup]]
+        subgroup_idx = subgroup_df.index
+        #size = len(subgroup_idx)
 
-        # sess = K.get_session()
-        # itr = sess.run(iterator.initializer, feed_dict={
-        #    features_placeholder: features,
-        #    labels_placeholder: labels})
-        ##i = 0
-        ##while i < 10:
-        ##    try:
-        ##        el = sess.run(next_element)
-        ##        logger.info("should be fine to enumerate")
-        ##        logger.info(el)
-        ##        i += 1
-        ##    except tf.errors.OutOfRangeError:
-        ##        break
-        # return itr
+        splits = list(KFold(n_splits=n_splits, random_state=2019, shuffle=True).split(subgroup_idx))  # just use sklearn split to get id and it is fine. For text thing,
+        tr_ind, val_ind = splits[0]  # just do 1 fold, later we can add them all back
+        return subgroup_df.iloc[tr_ind].index, subgroup_df.iloc[val_ind].index
+
+
+    def build_res_model(self, subgroup, loss='binary_crossentropy', metrics=None,
+                                      hidden_act='relu', with_BN=False):
+        if self.model is None:
+            logger.debug("Start loading model")
+            h5_file = '/proc/driver/nvidia/G2.0_attention_lstm_NOAUX_0.hdf5'
+            self.model = load_model(h5_file, custom_objects={'binary_crossentropy_with_focal': binary_crossentropy_with_focal, 'AttentionRaffel':AttentionRaffel})
+            logger.debug("Done loading model")
+        base_model = self.model
+
+        #add_1 = base_model.get_layer('add_1')
+        add_2 = base_model.get_layer('add_2')
+        main_logit = base_model.get_layer('dense_3')
+
+        #       after add_1, add another dense layer, (so totally not change exited structure(might affect other subgroup?)
+        #       then add this with add_2, finally go to sigmoid function (loss function no change ....) (should use small learning rate)
+        #hidden = concatenate([
+        #    add_2.output,
+        #    Dense(RES_DENSE_HIDDEN_UNITS, activation=hidden_act, name="res_features_recombination")(add_1.output)
+        #], name='cat_'+subgroup+'_res_to_main')
+        #result = Dense(1, activation='sigmoid', name='res_main_together')(hidden) -> not good
+        res_recombination = Dense(RES_DENSE_HIDDEN_UNITS, activation=hidden_act, name="res_features_recombination")(add_2.output)
+        hidden = add([res_recombination, Dense(RES_DENSE_HIDDEN_UNITS, activation=hidden_act, name='res_res')(res_recombination)], name="res_res_added")
+        res_logit = Dense(1, activation=None,  name='res_logit')(hidden)
+        logit = add([res_logit, main_logit.output], name='whole_logit')
+        result = Activation('sigmoid', name='whole_predict')(logit)
+
+
+        # first: train only the top layers (which were randomly initialized)
+        # i.e. freeze all convolutional InceptionV3 layers
+        for layer in base_model.layers:
+            layer.trainable = False
+        # compile the model (should be done *after* setting layers to non-trainable)
+        model = Model(inputs=base_model.input, outputs=result)
+
+        model.compile(optimizer='adam', loss=loss, metrics=metrics)
+        return model
+
+    def run_model_train(self, model, X, y, params, use_split=False, n_splits=5, y_aux=None):
+        if use_split:
+            assert n_splits > 1
+            splits = list(KFold(n_splits=n_splits, random_state=2019, shuffle=True).split(X))  # just use sklearn split to get id and it is fine. For text thing,
+        else:
+            n_splits = 1  # for the following for loop
+
+        prefix = params['prefix']
+        starter_lr = params['starter_lr']
+        validation_split = params.get('validation_split', 0.05)
+        epochs = params.get('epochs', EPOCHS)
+        lr_decay = params.get('lr_decay', LEARNING_RATE_DECAY_PER_EPOCH)
+        patience = params.get('patience', 3)
+        display_per_epoch = params.get('display_per_epoch', 5)
+        display_verbose = params.get('verbose', 2)
+        no_check_point = params.get('no_check_point', False)
+
+        prefix += 'G{:.1f}'.format(FOCAL_LOSS_GAMMA)
+
+        for fold in range(n_splits):  # will need to do this later
+            #K.clear_session()  # so it will start over todo fix K fold
+            if use_split:
+                tr_ind, val_ind = splits[fold]
+                logger.info('%d train comments, %d validate comments' % (tr_ind, val_ind))
+
+            else:
+                tr_ind, val_ind = [True]*len(X), [False]*len(X)
+
+            if NO_AUX:
+                h5_file = prefix + '_attention_lstm_NOAUX_' + f'{fold}.hdf5'  # we could load with file name, then remove and save to new one
+            else:
+                h5_file = prefix + '_attention_lstm_' + f'{fold}.hdf5'  # we could load with file name, then remove and save to new one
+            logger.debug(f'using checkpoint files: {h5_file}')
+
+            early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=patience)
+
+            # data thing
+            if NO_AUX:
+                y_train = y[tr_ind]
+                y_val = y[val_ind]
+            else:
+                y_train = [y[tr_ind], y_aux[tr_ind]]
+                y_val = [y[val_ind], y_aux[val_ind]]
+
+            callbacks=[LearningRateScheduler(lambda e: starter_lr * (lr_decay ** e), verbose=1), early_stop]
+            if not no_check_point:
+                ckpt = ModelCheckpoint(h5_file, save_best_only=True, verbose=1)
+                callbacks.append(ckpt)
+
+            if display_verbose == 1:
+                verbose = 0
+                prog_bar_logger = NBatchProgBarLogger(display_per_batches=int(len(tr_ind) / display_per_epoch / BATCH_SIZE),
+                                                  early_stop=True, patience_displays=patience)
+                callbacks.append(prog_bar_logger)
+            else:  # 0 or 2
+                verbose = display_verbose
+
+            logger.debug(f'{len(tr_ind)} training, {validation_split*len(tr_ind)} validation in fit')
+
+            model.fit(X[tr_ind], y[tr_ind], validation_split=validation_split, batch_size=BATCH_SIZE, epochs=epochs,
+                      verbose=verbose, callbacks=callbacks)
+
+    def run_model(self, model, mode,X,y=None, params={}, n_splits=0):
+        # checkpoint_predictions = []
+        # weights = []
+        if mode == 'train':
+            self.run_model_train(model, X, y, params, n_splits > 1, n_splits)
+        elif mode == 'predict':
+            pred = model.predict(X, verbose=2, batch_size=BATCH_SIZE)
+            return pred
+
+        #if predict_ones_with_identity:
+        #    return model.predict(self.train_X_identity, verbose=2, batch_size=BATCH_SIZE)
+
+    def locate_data_in_np_train(self, index):
+        """
+
+        :param index: must be for the index of range 405130
+        :return:
+        """
+        return self.train_X[index], self.train_y[index], self.train_y_aux[index]
+
+    def locate_subgroup_index_in_np_train(self, subgroup):
+        df = self.id_validate_df
+        index = df[df[subgroup]].index
+        return index
+    def locate_subgroup_data_in_np_train(self, subgroup):
+        """
+
+        :param index: must be for the index of range 405130
+        :return:
+        """
+        index = self.locate_subgroup_index_in_np_train(subgroup)
+        return self.locate_data_in_np_train(index)
+
+    def to_identity_index(self, index):
+        """
+
+        :param index: from 1.8m range index
+        :return: to 0.4 m range index in identity data
+        """
+        df = self.id_validate_df
+
+        return [df.index.get_loc(label) for label in index] # selected the items
+
+    def res_subgroup(self, subgroup, y_pred):
+        # first prepare the data
+        # 1. the subgroup
+        # 2. only the mis classified ones (will overfit to this?)  # it just like a res net... so just add a res net...
+        idx_train, idx_val = self.prepare_second_stage_data_index(y_pred, subgroup)  # idx_train, idx_val must be complementary for subgroup
+        # prepare the network (load from the existed model, only change the last perception layer(as data not enough), then just train with the error related data)
+        # 1. load the model
+        X,y,_ = self.locate_data_in_np_train(idx_train)
+        graph1 = Graph()
+        with graph1.as_default():
+            session1 = Session()
+            with session1.as_default():
+                h5_file = '/proc/driver/nvidia/white_G2.0_attention_lstm_NOAUX_0.hdf5'
+                if RESTART_TRAIN_RES or not os.path.isfile(h5_file):
+                    self.res_model = self.build_res_model(subgroup,
+                            loss=binary_crossentropy_with_focal,
+                            metrics=[binary_crossentropy, mean_absolute_error,])
+                    self.res_model.summary()
+
+                    self.run_model(self.res_model, 'train', X,y, params={
+                        'prefix': "/proc/driver/nvidia/"+subgroup+"_",
+                        'starter_lr': STARTER_LEARNING_RATE/8,
+                        'epochs': 70,
+                        'patience': 5,
+                        'lr_decay': 0.8,
+                        'validation_split': 0.05,
+                        'no_check_point': True
+                    })
+                else:  # file exit and restart_train==false
+                    logger.debug(f'load res model from {h5_file}')
+                    self.res_model = load_model(h5_file, custom_objects={'binary_crossentropy_with_focal': binary_crossentropy_with_focal, 'AttentionRaffel':AttentionRaffel})
+                    self.res_model.summary()
+
+                #y_res_pred = self.run_model(self.res_model, 'predict', X[idx_val])  # X all data with identity
+                subgroup_idx = self.locate_subgroup_index_in_np_train(subgroup)
+                mapped_subgroup_idx = self.to_identity_index(subgroup_idx)
+
+                X_all, y_all = self.train_X_identity, self.train_y_identity
+
+                logger.info("Start predict for all identities")
+                y_res_pred_all_group = self.run_model(self.res_model, 'predict', X_all)
+                logger.info("Done predict for all identities")
+
+                y_res_pred_all_train_val = y_res_pred_all_group[mapped_subgroup_idx]
+
+                y_res_pred = y_res_pred_all_group[self.to_identity_index(idx_val)]  # find the index
+
+        # 2. modify, change to not training
+        #       after add_1, add another dense layer, (so totally not change exited structure(might affect other subgroup?)
+        #       then add this with add_2, finally go to sigmoid function (loss function no change ....) (should use small learning rate)
+        # 3. train only the error ones
+        # 4. predict (the whole out)
+
+        # finally, predict, merge the data
+        #logger.debug(f'Predict for val {subgroup} comments, {len(y_res_pred)} items')  # change too small, so ignore
+        #self.res_combine_pred_print_result(subgroup, y_pred, y_res_pred, idx_train, idx_val)  # remove idx_train, add idx_val, then calculate auc
+
+        logger.debug(f'Predict for this {subgroup} comments, {len(y_res_pred_all_train_val)} items')  # should use cross validation
+        self.res_combine_pred_print_result(subgroup, y_pred, y_res_pred_all_train_val, [],subgroup_idx, detail=False)  # remove idx_train, add idx_val, then calculate auc
+
+        logger.debug(f'Predict for all {subgroup} comments, {len(y_res_pred)} items')  # should use cross validation
+        self.evaluate_model_and_print(y_res_pred_all_group, detail=False)  # only the ones with identity
+
+    def res_combine_pred_print_result(self, subgroup, y_pred, y_res_pred, idx_train, idx_val, detail=False):  # remove idx_train, add idx_val, then calculate auc
+        id_df = copy.deepcopy(self.judge.validate_df)
+        assert len(idx_train) + len(idx_val) == len(id_df[id_df[subgroup]])
+
+        assert id_df.shape[0] == len(y_pred)
+
+        model_name = 'res_'+subgroup
+        id_df[model_name] = y_pred  # there are comments mention two identity, so our way might not be good
+        id_df.loc[idx_val, id_df.columns.get_loc(model_name)] = y_res_pred  # not iloc, both are index from the 1.8 Million data
+
+        logger.debug(f'Res update for {subgroup}, {len(idx_val)} items predicted by res model')
+
+        self.evaluate_model_and_print(validate_df_with_preds=id_df, model_name=model_name, detail=detail)
 
     def run_bias_auc_model(self):
         """
@@ -878,20 +1093,21 @@ Overall predict, binary accuracy, compare with all zero
     def load_identity_data_idx(self):
         if self.identity_idx is None:
             self.train_X_identity, self.train_y_identity, self.identity_idx = self.emb.get_identity_train_data_df_idx()  # to train the identity
-        # return self.train_X_identity, self.train_y_identity
 
-    def evaluate_model(self, preds, threshold=0.5):
-
+    def evaluate_model_and_print(self, preds=None, threshold=0.5, validate_df_with_preds=None,  model_name='lstm', detail=True):
         self.emb.read_csv(train_only=True)
-
         self.load_identity_data_idx()
-        self.judge = d.BiasBenchmark(kernel.emb.train_df.iloc[self.identity_idx],threshold=threshold)  # the idx happen to be the iloc value
-        # and this judge, read data from pandas df, won't be affected by our operation to train_X. which is good
-        #value, bias_metrics, dist, overall_dist = kernel.judge.calculate_benchmark(preds)  # preds should be the same size
-        return kernel.judge.calculate_benchmark(preds)  # preds should be the same size
 
-    def evaluate_model_and_print(self, preds, threshold=0.5):
-        value, bias_metrics, subgroup_distribution, overall_distribution = self.evaluate_model(preds, threshold)
+        #if self.judge is None:  # no .... different threshold need to recalculate in the new judge
+        self.judge = d.BiasBenchmark(kernel.emb.train_df.iloc[self.identity_idx],threshold=threshold)  # the idx happen to be the iloc value
+        self.id_validate_df = self.judge.validate_df
+
+        if model_name == d.MODEL_NAME:
+            logger.debug(f'{model_name} result for {len(preds)} items:')
+            value, bias_metrics, subgroup_distribution, overall_distribution = self.judge.calculate_benchmark(preds)
+        elif model_name.startswith('res'):
+            logger.debug(f'{model_name} result for {len(validate_df_with_preds)} items in background')
+            value, bias_metrics, subgroup_distribution, overall_distribution = self.judge.calculate_benchmark(validate_df=validate_df_with_preds, model_name=model_name)
 
         bias_metrics_df = bias_metrics.set_index('subgroup')
 
@@ -904,6 +1120,8 @@ Overall predict, binary accuracy, compare with all zero
         logger.info(f'final metric: {value} for threshold {threshold} applied to \'{d.TARGET_COLUMN}\' column')
         logger.info("\n{}".format(bias_metrics[['subgroup', 'subgroup_auc', 'bnsp_auc', 'bpsn_auc']]))
         # logger.info(subgroup_distribution)
+        if not detail:
+            return
         print("### subgroup auc")
         for d0 in subgroup_distribution:
             g = d0['subgroup']
@@ -952,14 +1170,22 @@ parser.add_argument('--train_steps', default=2, type=int,
 parser.add_argument('--learning_rate', default=0.001, type=float,
                     help='learing rate')
 
+DEBUG = True
+## all for debug
+preds = None
+kernel = None
+X,y,idx_train_background, idx_val_background = None, None,None,None
+y_res_pred = None
+
 # lambda e: 5e-3 * (0.5 ** e),
 STARTER_LEARNING_RATE = 5e-3 # as the BCE we adopted...
 LEARNING_RATE_DECAY_PER_EPOCH = 0.5
 
 IDENTITY_RUN = False
-TARGET_RUN = True
-PRD_ONLY = True
-RESTART_TRAIN = False
+TARGET_RUN = "lstm"
+PRD_ONLY = False
+RESTART_TRAIN = True
+RESTART_TRAIN_RES = True
 
 NO_AUX = True
 Y_TRAIN_BIN = False  # with True, slightly worse
@@ -978,6 +1204,7 @@ CONVERT_TRAIN_DATA = 'convert_train_data'  # given the pickle of numpy train dat
 
 EXCLUDE_IDENTITY_IN_TRAIN = True
 TRAIN_DATA_EXCLUDE_IDENDITY_ONES = 'TRAIN_DATA_EXCLUDE_IDENDITY_ONES'
+DATA_ACTION_NO_NEED_LOAD_EMB_M = 'DATA_ACTION_NO_NEED_LOAD_EMB_M'
 
 NEG_RATIO = (1 - 0.05897253769515213)
 
@@ -1079,6 +1306,8 @@ def main(argv):
     else:
         if EXCLUDE_IDENTITY_IN_TRAIN:
             action = TRAIN_DATA_EXCLUDE_IDENDITY_ONES
+    if not RESTART_TRAIN:
+        action = DATA_ACTION_NO_NEED_LOAD_EMB_M  # loading model from h5 file, no need load emb matrix (save memory)
     kernel = KaggleKernel(action=action)
     logger.debug(action)
     kernel.load_identity_data_idx()  # so only predict part of the data
@@ -1086,7 +1315,6 @@ def main(argv):
     logger.info("load data done")
 
     # pred = pickle.load(open('predicts', 'rb'))
-    # preds = pred[identity_idx, 0]
 
     if IDENTITY_RUN:
         # preds = np.where(preds >= 0.5, True, False) no need recording to API description, but why auc value can change?
@@ -1094,15 +1322,21 @@ def main(argv):
             'prefix': "/proc/driver/nvidia/"
         })
 
-    if TARGET_RUN:
+    if TARGET_RUN == 'res':
         # if not os.path.isfile('predicts'):
+        if DEBUG: global preds
+
+        preds = pickle.load(open('predicts', 'rb'))
+        kernel.evaluate_model_and_print(preds)
+        kernel.res_subgroup('white', preds)  # improve the model with another data input,
+
+    elif TARGET_RUN == 'lstm':
         predict_only = PRD_ONLY
         preds = kernel.run_lstm_model(predict_ones_with_identity=True, params={
             'prefix': "/proc/driver/nvidia/",
             're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
             'predict-only': predict_only
         })
-        kernel.model  # improve the model with another data input,
 
         if NO_AUX:
             pickle.dump(preds, open("predicts", 'wb'))  # only the ones with identity is predicted
@@ -1111,7 +1345,7 @@ def main(argv):
             preds = preds[0]
         # else:
         #    preds = pickle.load(open('predicts', 'rb'))
-        kernel.evaluate_model_and_print(preds, 0.5)
+        kernel.evaluate_model_and_print(preds)
         #kernel.evaluate_model_and_print(preds, 0.55)
 
         # todo later we could split train/test, to see overfit thing, preds here are all ones with identity, need to
@@ -1131,8 +1365,6 @@ def main(argv):
     return
 
 
-prog_bar_logger = NBatchProgBarLogger(display_per_batches=int(1000000 / 30 / BATCH_SIZE), early_stop=True,
-                                      patience_displays=3)
 
 if __name__ == '__main__':
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)
