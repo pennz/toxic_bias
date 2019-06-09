@@ -171,12 +171,18 @@ else:
     if not os.path.isfile('.env_setup_done'):
         if not quick:
             setup_kaggle()
-            download_kaggle_data()
+            if not os.path.isdir("../input"):
+                download_kaggle_data()
             list_submisstion()
             pip_install_thing()
             #setup_gdrive()
             #download_lstm_from_gdrive()
-            mount_gdrive()
+            try:
+                mount_gdrive()
+            except ModuleNotFoundError:
+                setup_gdrive()
+                download_lstm_from_gdrive()
+
         run_process_print('export PATH=$PWD:$PATH') # not helpful
         run_process_print('touch .env_setup_done')
 
