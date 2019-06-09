@@ -576,8 +576,8 @@ class KaggleKernel:
         x = Embedding(*self.embedding_matrix.shape, weights=[self.embedding_matrix], trainable=False)(words)
 
         x = SpatialDropout1D(0.2)(x)
-        x = Bidirectional(CuDNNLSTM(LSTM_UNITS, return_sequences=True))(x)
-        x = Bidirectional(CuDNNLSTM(LSTM_UNITS, return_sequences=True))(x)
+        x = Bidirectional(CuDNNLSTM(LSTM_UNITS, activation='tanh', return_sequences=True))(x)
+        x = Bidirectional(CuDNNLSTM(LSTM_UNITS, activation='tanh', return_sequences=True))(x)
 
         hidden = concatenate([
             AttentionRaffel(d.MAX_LEN, name="attention_after_lstm")(x),
@@ -1168,7 +1168,7 @@ LEARNING_RATE_DECAY_PER_EPOCH = 0.5
 IDENTITY_RUN = True
 TARGET_RUN = "lstm"
 PRD_ONLY = False
-RESTART_TRAIN = False
+RESTART_TRAIN = True
 RESTART_TRAIN_RES = True
 
 NO_AUX = True
