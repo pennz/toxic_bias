@@ -26,6 +26,7 @@ import logging
 import copy
 
 from IPython.core.debugger import set_trace
+from tensorflow.python import debug as tf_debug
 
 # NUM_MODELS = 2  # might be helpful but...
 
@@ -516,78 +517,50 @@ class KaggleKernel:
         model = Model(inputs=words, outputs=result)
         # model = Model(inputs=words, outputs=result_with_aux)
         # model.compile(loss='binary_crossentropy', optimizer='adam')
+        try:
+            model.compile(loss='binary_crossentropy', optimizer='adam', metrics=[mean_absolute_error, binary_sensitivity, binary_specificity])  # need to improve#for target it should be fine, they are positive related
+        except Exception as e:
+            logger.warning(e)
+            model.compile(loss='binary_crossentropy', optimizer='adam', metrics=[mean_absolute_error])  # need to improve#for target it should be fine, they are positive related
 
-        model.compile(loss='binary_crossentropy', optimizer=Adam(0.005))  # need to improve#for target it should be fine, they are positive related
         return model
 
-    def run_identity_model(self, n_splits, features, labels, params):
+    def run_identity_model(self, subgroup, features, labels, params):
 
-        splits = list(KFold(n_splits=n_splits, random_state=2019, shuffle=True).split(
-            features))  # just use sklearn split to get id and it is fine. For text thing,
-        # memory is enough, fit in, so tfrecord not needed, just pickle and load it all to memory
-        # TODO condiser use train test split as, so no need to run 5 times...
-        '''
-        train_df, validate_df = model_selection.train_test_split(train, test_size=0.2)
-        logger.info('%d train comments, %d validate comments' % (len(train_df), len(validate_df)))'''
         prefix = params['prefix']
+        file_name = f'{prefix}_{subgroup}_0.hdf5'
+        params['check_point_path'] = file_name
+        target_subgroup = labels[:, d.IDENTITY_COLUMNS.index(subgroup)]
 
-        # self.oof_preds = np.zeros(labels.shape)
-        # test_preds = np.zeros((self.to_predict_X.shape[0]))
-        for i, identity in enumerate(d.IDENTITY_COLUMNS):  # not sure the index is right or not, from pandas to numpy
-            for fold in range(n_splits):
-                K.clear_session()  # so it will start over, across different fold, but we will load model form checkpoint
-                tr_ind, val_ind = splits[fold]
-                file_name = prefix + '_' + identity + f'_{fold}.hdf5'
+        if RESTART_TRAIN or not os.path.isfile(file_name):
+            model = self.build_identity_model(1)  # one model per identity...
+            self.run_model_train(model, features, target_subgroup, params)
+        else:
+            logger.info("restore from the model file")
+            model = load_model(file_name, custom_objects={'AttentionRaffel': AttentionRaffel,
+                                                          'binary_sensitivity': binary_sensitivity,
+                                                          'binary_specificity': binary_specificity})
 
-                ckpt = ModelCheckpoint(file_name, save_best_only=True, verbose=1)
-                early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=2)
+            continue_train = params.get('continue_train', False)
+            if continue_train:
+                params['starter_lr'] = params['starter_lr'] / 16
+                self.run_model_train(model, features, target_subgroup, params)
 
-                if not os.path.isfile(file_name):
-                    model = self.build_identity_model(1)  # one model per identity...
-                    # model = self.build_identity_model(len(d.IDENTITY_COLUMNS))
-                else:
-                    logger.info("restore from the model file")
-                    model = load_model(file_name,
-                                       custom_objects={'AttentionRaffel':AttentionRaffel})
-                    logger.info("restore from the model file -> done\n\n\n\n\n")
+            logger.info(f"restore from the model file {file_name} -> done\n\n\n\n")
+            identity_predict = self.run_model(model, 'predict', self.train_X)
+            identity_predict_for_metric = identity_predict[self.identity_idx]
 
-                self.model = model  # for debug
-                model.fit(features[tr_ind],
-                          # self.train_y[tr_ind]>0.5,
-                          labels[tr_ind][:, i],
-                          batch_size=BATCH_SIZE,
-                          epochs=EPOCHS,
-                          verbose=0,
-                          # validation_data=(self.train_X[val_ind], self.train_y[val_ind]>0.5),
-                          validation_data=(features[val_ind], labels[val_ind][:, i]),
-                          callbacks=[
-                              LearningRateScheduler(
-                                  lambda e: STARTER_LEARNING_RATE * (LEARNING_RATE_DECAY_PER_EPOCH ** e),
-                                  verbose=1
-                              ),
-                              early_stop,
-                              ckpt
-                          ])
-                break  # only run one fold...
+            s = binary_sensitivity_np(identity_predict_for_metric.reshape(-1), target_subgroup)
+            logger.info(f'for {subgroup}, predict_sensitivity is {s}')
 
-            # schedule: a function that takes an epoch index as input(integer, indexed from 0) and current learning rate and returns a new learning rate as output(float).
-            # verbose: int. 0: quiet, 1: update messages.
+            predict_file_name = f'{prefix}_{subgroup}_pred.pkl'
+            pickle.dump(identity_predict, open(predict_file_name, 'wb'))
+
 
             # self._val_index = val_ind  # for debug
             # pred = model.predict(self.train_X[val_ind], verbose=2)
             # self.oof_preds[val_ind] += pred
-
-        # logger.info('Overall predict, binary accuracy')
-        # logger.info(K.get_session().run(KaggleKernel.bin_acc_2(labels, self.oof_preds)).mean())
-        # logger.info('Overall predict, binary accuracy, compare with all zero')
-        # logger.info(K.get_session().run(KaggleKernel.bin_acc_2(labels, np.zeros(labels.shape))).mean())
-        """:(
-Overall predict, binary accuracy
-0.930945
-Overall predict, binary accuracy, compare with all zero
-0.9437693"""
-
-        pickle.dump(self.oof_preds, open(prefix + "predicts", 'wb'))
+        #pickle.dump(self.oof_preds, open(prefix + "predicts", 'wb'))
 
     def build_lstm_model_customed(self, num_aux_targets, with_aux=False, loss='binary_crossentropy', metrics=None,
                                   hidden_act='relu', with_BN=False):
@@ -697,8 +670,12 @@ Overall predict, binary accuracy, compare with all zero
 
         prefix += 'G{:.1f}'.format(FOCAL_LOSS_GAMMA)
 
+
         for fold in range(n_splits):
-            K.clear_session()  # so it will start over
+            if DEBUG:
+                K.set_session(tf_debug.LocalCLIDebugWrapperSession(tf.Session()))
+            else:
+                K.clear_session()  # so it will start over
             tr_ind, val_ind = splits[fold]
 
             if NO_AUX:
@@ -736,7 +713,7 @@ Overall predict, binary accuracy, compare with all zero
 
             else:
                 model = load_model(h5_file, custom_objects={'binary_crossentropy_with_focal': binary_crossentropy_with_focal, 'AttentionRaffel':AttentionRaffel})
-                starter_lr = starter_lr * LEARNING_RATE_DECAY_PER_EPOCH ** EPOCHS
+                starter_lr = starter_lr * LEARNING_RATE_DECAY_PER_EPOCH ** (EPOCHS+2)
                 self.model = model
                 logger.debug('restore from the model file {} -> done'.format(h5_file))
 
@@ -768,6 +745,7 @@ Overall predict, binary accuracy, compare with all zero
             #              ckpt,
             #              tf_fit_batch_logger])
             if predict_only:
+                set_trace()
                 break  # do not fit
             prog_bar_logger = NBatchProgBarLogger(display_per_batches=int(1300000 / 30 / BATCH_SIZE), early_stop=True,
                                       patience_displays=3)
@@ -913,6 +891,7 @@ Overall predict, binary accuracy, compare with all zero
         display_per_epoch = params.get('display_per_epoch', 5)
         display_verbose = params.get('verbose', 2)
         no_check_point = params.get('no_check_point', False)
+        passed_check_point_file_path = params.get('check_point_path', None)
 
         prefix += 'G{:.1f}'.format(FOCAL_LOSS_GAMMA)
 
@@ -929,6 +908,10 @@ Overall predict, binary accuracy, compare with all zero
                 h5_file = prefix + '_attention_lstm_NOAUX_' + f'{fold}.hdf5'  # we could load with file name, then remove and save to new one
             else:
                 h5_file = prefix + '_attention_lstm_' + f'{fold}.hdf5'  # we could load with file name, then remove and save to new one
+
+            if passed_check_point_file_path is not None:
+                h5_file = passed_check_point_file_path
+
             logger.debug(f'using checkpoint files: {h5_file}')
 
             early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=patience)
@@ -942,6 +925,7 @@ Overall predict, binary accuracy, compare with all zero
                 y_val = [y[val_ind], y_aux[val_ind]]
 
             callbacks=[LearningRateScheduler(lambda e: starter_lr * (lr_decay ** e), verbose=1), early_stop]
+
             if not no_check_point:
                 ckpt = ModelCheckpoint(h5_file, save_best_only=True, verbose=1)
                 callbacks.append(ckpt)
@@ -1063,7 +1047,7 @@ Overall predict, binary accuracy, compare with all zero
         self.res_combine_pred_print_result(subgroup, y_pred, y_res_pred_all_train_val, [],subgroup_idx, detail=False)  # remove idx_train, add idx_val, then calculate auc
 
         logger.debug(f'Predict for all {subgroup} comments, {len(y_res_pred)} items')  # should use cross validation
-        self.evaluate_model_and_print(y_res_pred_all_group, detail=False)  # only the ones with identity
+        self.calculate_metrics_and_print(y_res_pred_all_group, detail=False)  # only the ones with identity
 
     def res_combine_pred_print_result(self, subgroup, y_pred, y_res_pred, idx_train, idx_val, detail=False):  # remove idx_train, add idx_val, then calculate auc
         id_df = copy.deepcopy(self.judge.validate_df)
@@ -1077,7 +1061,7 @@ Overall predict, binary accuracy, compare with all zero
 
         logger.debug(f'Res update for {subgroup}, {len(idx_val)} items predicted by res model')
 
-        self.evaluate_model_and_print(validate_df_with_preds=id_df, model_name=model_name, detail=detail)
+        self.calculate_metrics_and_print(validate_df_with_preds=id_df, model_name=model_name, detail=detail)
 
     def run_bias_auc_model(self):
         """
@@ -1094,7 +1078,7 @@ Overall predict, binary accuracy, compare with all zero
         if self.identity_idx is None:
             self.train_X_identity, self.train_y_identity, self.identity_idx = self.emb.get_identity_train_data_df_idx()  # to train the identity
 
-    def evaluate_model_and_print(self, preds=None, threshold=0.5, validate_df_with_preds=None,  model_name='lstm', detail=True):
+    def calculate_metrics_and_print(self, preds=None, threshold=0.5, validate_df_with_preds=None, model_name='lstm', detail=True):
         self.emb.read_csv(train_only=True)
         self.load_identity_data_idx()
 
@@ -1170,7 +1154,7 @@ parser.add_argument('--train_steps', default=2, type=int,
 parser.add_argument('--learning_rate', default=0.001, type=float,
                     help='learing rate')
 
-DEBUG = True
+DEBUG = False
 ## all for debug
 preds = None
 kernel = None
@@ -1181,10 +1165,10 @@ y_res_pred = None
 STARTER_LEARNING_RATE = 5e-3 # as the BCE we adopted...
 LEARNING_RATE_DECAY_PER_EPOCH = 0.5
 
-IDENTITY_RUN = False
+IDENTITY_RUN = True
 TARGET_RUN = "lstm"
 PRD_ONLY = False
-RESTART_TRAIN = True
+RESTART_TRAIN = False
 RESTART_TRAIN_RES = True
 
 NO_AUX = True
@@ -1207,6 +1191,68 @@ TRAIN_DATA_EXCLUDE_IDENDITY_ONES = 'TRAIN_DATA_EXCLUDE_IDENDITY_ONES'
 DATA_ACTION_NO_NEED_LOAD_EMB_M = 'DATA_ACTION_NO_NEED_LOAD_EMB_M'
 
 NEG_RATIO = (1 - 0.05897253769515213)
+
+def binary_sensitivity_np(y_pred, y_true):
+    threshold = 0.5
+    #predict_false = y_pred <= threshold
+    y_true = y_true > threshold
+    predict_true = y_pred > threshold
+    TP = np.multiply(y_true, predict_true)
+    #FP = np.logical_and(y_true == 0, predict_true)
+
+    # as Keras Tensors
+    TP = TP.sum()
+    #FP = FP.sum()
+
+    sensitivity = TP / y_true.sum()
+    return sensitivity
+
+def binary_sensitivity(y_pred, y_true):
+    """Compute the confusion matrix for a set of predictions.
+
+    Parameters
+    ----------
+    y_pred   : predicted values for a batch if samples (must be binary: 0 or 1)
+    y_true   : correct values for the set of samples used (must be binary: 0 or 1)
+
+    Returns
+    -------
+    out : the specificity
+    """
+    threshold = 0.5
+    TP = np.logical_and(K.eval(y_true) == 1, K.eval(y_pred) <= threshold)
+    FP = np.logical_and(K.eval(y_true) == 0, K.eval(y_pred) > threshold)
+
+    # as Keras Tensors
+    TP = K.sum(K.variable(TP))
+    FP = K.sum(K.variable(FP))
+
+    sensitivity = TP / (TP + FP + K.epsilon())
+    return sensitivity
+
+def binary_specificity(y_pred, y_true):
+    """Compute the confusion matrix for a set of predictions.
+
+    Parameters
+    ----------
+    y_pred   : predicted values for a batch if samples (must be binary: 0 or 1)
+    y_true   : correct values for the set of samples used (must be binary: 0 or 1)
+
+    Returns
+    -------
+    out : the specificity
+    """
+
+    threshold = 0.5
+    TN = np.logical_and(K.eval(y_true) == 0, K.eval(y_pred) <= threshold)
+    FP = np.logical_and(K.eval(y_true) == 0, K.eval(y_pred) > threshold)
+
+    # as Keras Tensors
+    TN = K.sum(K.variable(TN))
+    FP = K.sum(K.variable(FP))
+
+    specificity = TN / (TN + FP + K.epsilon())
+    return specificity
 
 
 # search !!!!! tensorflow has auc.......................!!!!!!!!!!!!!!!!!!!!
@@ -1238,7 +1284,7 @@ def binary_auc_probability(y_true, y_pred, threshold=0.5, N_MORE=True, epsilon=1
     y_true = math_ops.cast(y_true > threshold, y_pred.dtype)
 
     true_pos_predict = math_ops.multiply(y_true, y_pred)  # %6 pos
-    ture_neg_predict = math_ops.multiply(1. - y_true, y_pred)  # 94% neg...
+    true_neg_predict = math_ops.multiply(1. - y_true, 1-y_pred)  # 94% neg...
 
     # recision = math_ops.div(correct_pos, predict_pos)
     # recall = math_ops.div(correct_pos, ground_pos)
@@ -1315,37 +1361,58 @@ def main(argv):
     logger.info("load data done")
 
     # pred = pickle.load(open('predicts', 'rb'))
+    prefix = kernel.emb.BIN_FOLDER
 
     if IDENTITY_RUN:
         # preds = np.where(preds >= 0.5, True, False) no need recording to API description, but why auc value can change?
-        kernel.run_identity_model(5, kernel.train_X_identity, kernel.train_y_identity, params={
-            'prefix': "/proc/driver/nvidia/"
-        })
+        for idtt in ['psychiatric_or_mental_illness']:  #d.IDENTITY_COLUMNS:
+            kernel.run_identity_model(idtt, kernel.train_X_identity, kernel.train_y_identity, params={
+                'prefix': prefix,
+                'starter_lr': STARTER_LEARNING_RATE,
+                'epochs': 8,
+                'patience': 2,
+                'lr_decay': 0.5,
+                'validation_split': 0.05,
+                'no_check_point': False,  # save check point or not
+                'verbose': 2,
+                'continue_train': True
+            })
+
+        return
 
     if TARGET_RUN == 'res':
         # if not os.path.isfile('predicts'):
         if DEBUG: global preds
 
         preds = pickle.load(open('predicts', 'rb'))
-        kernel.evaluate_model_and_print(preds)
+        kernel.calculate_metrics_and_print(preds)
         kernel.res_subgroup('white', preds)  # improve the model with another data input,
 
     elif TARGET_RUN == 'lstm':
         predict_only = PRD_ONLY
-        preds = kernel.run_lstm_model(predict_ones_with_identity=True, params={
-            'prefix': "/proc/driver/nvidia/",
-            're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
-            'predict-only': predict_only
-        })
 
-        if NO_AUX:
-            pickle.dump(preds, open("predicts", 'wb'))  # only the ones with identity is predicted
+
+        if ANA_RESULT:
+            preds = pickle.load(open('predicts', 'rb'))
         else:
-            pickle.dump(preds[0], open("predicts", 'wb'))  # only the ones with identity is predicted
-            preds = preds[0]
+            preds = kernel.run_lstm_model(predict_ones_with_identity=True, params={
+                'prefix': prefix,
+                're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
+                'predict-only': predict_only
+            })
+
+            if NO_AUX:
+                pickle.dump(preds, open("predicts", 'wb'))  # only the ones with identity is predicted
+            else:
+                pickle.dump(preds[0], open("predicts", 'wb'))  # only the ones with identity is predicted
+                preds = preds[0]
         # else:
         #    preds = pickle.load(open('predicts', 'rb'))
-        kernel.evaluate_model_and_print(preds)
+        kernel.calculate_metrics_and_print(preds)
+        pd.options.display.float_format = '{:,.2f}'.format
+        pd.options.display.max_colwidth = 140
+        # df[df.white & (df.target_orig<0.5) & (df.lstm > 0.5)][['comment_text','lstm','target_orig']].head()
+        set_trace()
         #kernel.evaluate_model_and_print(preds, 0.55)
 
         # todo later we could split train/test, to see overfit thing, preds here are all ones with identity, need to
@@ -1364,7 +1431,15 @@ def main(argv):
     # })
     return
 
+ANA_RESULT = False
+if os.path.isfile('.ana_result'):
+    ANA_RESULT = True
+    RESTART_TRAIN = False
 
+    IDENTITY_RUN = False
+    TARGET_RUN = "lstm"
+    PRD_ONLY = False
+    RESTART_TRAIN_RES = False
 
 if __name__ == '__main__':
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)

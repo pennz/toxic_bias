@@ -5,6 +5,7 @@ import psutil
 
 USER_NAME='pengyu'
 TFRECORD_FILDATALAG = '.tf_record_saved'
+GDRIVE_DOWNLOAD_DEST = './'
 
 def run_commans(commands, timeout=30):
     for c in commands.splitlines():
@@ -68,6 +69,15 @@ def setup_kaggle():
     """
     run_commans(s, timeout=60)
 
+def download_kaggle_data():
+    if not os.path.isfile('../input/jigsaw-unintended-bias-in-toxicity-classification/test.csv'):
+        s = """kaggle competitions download jigsaw-unintended-bias-in-toxicity-classification
+        unzip test.csv.zip
+        unzip train.csv.zip
+        """
+        run_commans(s, timeout=60)
+
+
 def setup_gdrive():
     download_file_one_at_a_time("gdrive")
     s = """chmod +x ./gdrive
@@ -85,6 +95,13 @@ def setup_gdrive():
     with open("token_v2.json", 'wb') as f:
             f.write(bytes(str, 'utf-8'))
     run_process_print('mv token_v2.json $HOME/.gdrive') # last command cannot know $HOME easily, so python + shell
+
+def mount_gdrive():
+    from google.colab import drive
+    drive.mount('/content/gdrivedata')
+
+    run_process_print(f'touch {TFRECORD_FILDATALAG}')
+
 
 #setup_gdrive()
 #upload_file_one_at_a_time("~/.kaggle/kaggle.json")
@@ -121,12 +138,12 @@ def download_lstm_from_gdrive():
     download from gdrive, files are in `lstm_data` folder
     """
     run_commans(
-        """
-        ./gdrive download 1glTXC4_DCE3DGJaGT721CcPAkE9RTkOi --path /proc/driver/nvidia/ # train
-        ./gdrive download 1mMwuBOLNqa_gaY2O7v3jpOk-DFgna-1E --path /proc/driver/nvidia/ # test
-        ./gdrive download 1WAyOTiG3rvsrp1MDeacwikoXTH7XqEtQ --path /proc/driver/nvidia/ # embedding
-        ./gdrive download 1d_2uUzStUhuzErWAcIIk2TuzA1bFyKN7  # predicts (no res)
-        ./gdrive download 1VFYcLECsE2BAYoe_q2o4a7aMT3OTp5S6 --path /proc/driver/nvidia/ # model
+        f"""
+        ./gdrive download 1glTXC4_DCE3DGJaGT721CcPAkE9RTkOi --path {GDRIVE_DOWNLOAD_DEST} # train
+        ./gdrive download 1mMwuBOLNqa_gaY2O7v3jpOk-DFgna-1E --path {GDRIVE_DOWNLOAD_DEST} # test
+        ./gdrive download 1WAyOTiG3rvsrp1MDeacwikoXTH7XqEtQ --path {GDRIVE_DOWNLOAD_DEST} # embedding
+        ./gdrive download 1d_2uUzStUhuzErWAcIIk2TuzA1bFyKN7 --path {GDRIVE_DOWNLOAD_DEST} # predicts (no res)
+        ./gdrive download 1VFYcLECsE2BAYoe_q2o4a7aMT3OTp5S6 --path {GDRIVE_DOWNLOAD_DEST} # model
         #./gdrive download   # predicts result (for target)
         #./gdrive download   # identity model
         #mv lstm_data/* . 
@@ -154,10 +171,12 @@ else:
     if not os.path.isfile('.env_setup_done'):
         if not quick:
             setup_kaggle()
+            download_kaggle_data()
             list_submisstion()
             pip_install_thing()
-            setup_gdrive()
-            download_lstm_from_gdrive()
+            #setup_gdrive()
+            #download_lstm_from_gdrive()
+            mount_gdrive()
         run_process_print('export PATH=$PWD:$PATH') # not helpful
         run_process_print('touch .env_setup_done')
 

@@ -30,12 +30,6 @@ TOXICITY_COLUMN = TARGET_COLUMN
 # CHARS_TO_REMOVE = '!"#$%&()*+,-./:;<=>?@[\\]^_`{|}~\t\n“”’\'∞θ÷α•à−β∅³π‘₹´°£€\×™√²—'
 DATA_FILE_FLAG = '.tf_record_saved'
 
-BIN_FOLDER="/proc/driver/nvidia/"
-# test_df_id = None # for generating result, need id
-E_M_FILE = BIN_FOLDER+"embedding.mat"
-DATA_TRAIN_FILE = BIN_FOLDER+"emb_train_features.bin"
-DATA_TEST_FILE = BIN_FOLDER+"emb_test_features.bin"
-
 
 def maybe_download(url):
     # By default the file at the url origin is downloaded to the cache_dir ~/.keras,
@@ -186,7 +180,7 @@ class BiasBenchmark:
     def __init__(self, train_df_id_na_dropped, threshold=0.5):
         # we can use this to divide subgroups(beside, we need to calculate only the 45000, with identities
         self.threshold = threshold
-        self.validate_df = BiasBenchmark.convert_dataframe_to_bool(train_df_id_na_dropped[IDENTITY_COLUMNS+[TOXICITY_COLUMN]], threshold)
+        self.validate_df = BiasBenchmark.copy_convert_dataframe_to_bool(train_df_id_na_dropped[IDENTITY_COLUMNS + [TOXICITY_COLUMN, 'comment_text']], threshold)
 
     @staticmethod
     def compute_auc(y_true, y_pred):
@@ -347,15 +341,17 @@ class BiasBenchmark:
         return (OVERALL_MODEL_WEIGHT * overall_auc) + ((1 - OVERALL_MODEL_WEIGHT) * bias_score)
 
     @staticmethod
-    def convert_to_bool(df, col_name, threshold=0.5):
+    def convert_to_bool(df, col_name, threshold=0.5, keep_original=False):
+        if keep_original:
+            df[col_name+'_orig'] = df[col_name]
         df[col_name] = np.where(df[col_name] >= threshold, True, False)
 
     @staticmethod
-    def convert_dataframe_to_bool(df, threshold):
+    def copy_convert_dataframe_to_bool(df, threshold):
         bool_df = df.copy()
         for col in IDENTITY_COLUMNS:
             BiasBenchmark.convert_to_bool(bool_df, col)
-        BiasBenchmark.convert_to_bool(bool_df,TARGET_COLUMN, threshold)
+        BiasBenchmark.convert_to_bool(bool_df, TARGET_COLUMN, threshold, keep_original=True)
         return bool_df
 
     def calculate_benchmark(self, pred=None, validate_df=None, model_name=MODEL_NAME):
@@ -686,6 +682,22 @@ class EmbeddingHandler:
 
         self.do_emb_matrix_preparation = prepare_emb
 
+        self.BIN_FOLDER="/proc/driver/nvidia/"
+        # test_df_id = None # for generating result, need id
+        #self.E_M_FILE = self.BIN_FOLDER+"embedding.mat"
+        #self.DATA_TRAIN_FILE = self.BIN_FOLDER+"emb_train_features.bin"
+        #self.DATA_TEST_FILE = self.BIN_FOLDER+"emb_test_features.bin"
+
+    @property
+    def DATA_TEST_FILE(self):
+        return self.BIN_FOLDER+"emb_test_features.bin"
+    @property
+    def DATA_TRAIN_FILE(self):
+        return self.BIN_FOLDER+"emb_train_features.bin"
+    @property
+    def E_M_FILE(self):
+        return self.BIN_FOLDER+"embedding.mat"
+
     def read_csv(self, train_only=False):
         if self.train_df is None:
             self.train_df = pd.read_csv(self.INPUT_DATA_DIR + 'train.csv')
@@ -901,7 +913,7 @@ class EmbeddingHandler:
 
             if dump:
                 train_data = zip(self.x_train, self.y_train, self.y_aux_train)
-                pickle.dump(train_data, open(DATA_TRAIN_FILE, 'wb'))  # overwrite with new
+                pickle.dump(train_data, open(self.DATA_TRAIN_FILE, 'wb'))  # overwrite with new
 
                 # file flag
                 with open(DATA_FILE_FLAG, 'wb') as f:
@@ -941,10 +953,10 @@ class EmbeddingHandler:
 
         if dump:
             if embedding:
-                pickle.dump(self.embedding_matrix, open(E_M_FILE, 'wb'))
+                pickle.dump(self.embedding_matrix, open(self.E_M_FILE, 'wb'))
             if train_test_data:
-                pickle.dump(train_data, open(DATA_TRAIN_FILE, 'wb'))
-                pickle.dump(self.x_test, open(DATA_TEST_FILE, 'wb'))
+                pickle.dump(train_data, open(self.DATA_TRAIN_FILE, 'wb'))
+                pickle.dump(self.x_test, open(self.DATA_TEST_FILE, 'wb'))
 
             # file flag
             with open(DATA_FILE_FLAG, 'wb') as f:
@@ -962,15 +974,29 @@ class EmbeddingHandler:
             if action is not None and action == lstm.DATA_ACTION_NO_NEED_LOAD_EMB_M:
                 self.embedding_matrix = None
             else:
-                self.embedding_matrix = pickle.load(open(E_M_FILE, "rb"))
+                try:
+                    self.embedding_matrix = pickle.load(open(self.E_M_FILE, "rb"))
+                except FileNotFoundError:
+                    self.BIN_FOLDER = '/content/gdrivedata/My Drive/'
+                    if not os.path.isdir(self.BIN_FOLDER):
+                        self.BIN_FOLDER = './'
+                    self.embedding_matrix = pickle.load(open(self.E_M_FILE, "rb"))
+
 
             if action is not None:  # exist data, need to convert data
                 if action == lstm.CONVERT_TRAIN_DATA:
                     self.prepare_tfrecord_data(train_test_data=True, embedding=False, action=action) # train data will rebuild, so we put it before read from pickle
 
             # just recover from record file
-            data_train = pickle.load(open(DATA_TRAIN_FILE, "rb"))  # (None, 2048)
-            self.x_test = pickle.load(open(DATA_TEST_FILE, "rb"))  # (None, 2048) 2048 features from xception net
+            try:
+                data_train = pickle.load(open(self.DATA_TRAIN_FILE, "rb"))  # (None, 2048)
+            except FileNotFoundError:
+                self.BIN_FOLDER = '/content/gdrivedata/My Drive/'
+                if not os.path.isdir(self.BIN_FOLDER):
+                    self.BIN_FOLDER = './'
+                data_train = pickle.load(open(self.DATA_TRAIN_FILE, "rb"))  # (None, 2048)
+
+            self.x_test = pickle.load(open(self.DATA_TEST_FILE, "rb"))  # (None, 2048) 2048 features from xception net
 
             self.x_train, self.y_train, self.y_aux_train = zip(*data_train)
             self.x_train, self.y_train, self.y_aux_train = np.array(self.x_train), np.array(self.y_train), np.array(
@@ -983,6 +1009,10 @@ class EmbeddingHandler:
                 self.test_df_id = pd.read_csv(self.INPUT_DATA_DIR + 'test.csv').id  # only id series is needed for generating submission csv file
             except FileNotFoundError:
                 self.INPUT_DATA_DIR = '../input/'
+                if not os.path.isdir(self.INPUT_DATA_DIR):
+                    self.INPUT_DATA_DIR = '/home/pengyu/works/input/jigsaw-unintended-bias-in-toxicity-classification/'
+                if not os.path.isdir(self.INPUT_DATA_DIR):
+                    self.INPUT_DATA_DIR = './'
                 self.test_df_id = pd.read_csv(self.INPUT_DATA_DIR + 'test.csv').id  # only id series is needed for generating submission csv file
 
             if action is not None:  # exist data, need to convert data, so put after read from pickle
@@ -994,7 +1024,7 @@ class EmbeddingHandler:
             # (x_train, y_train, y_aux_train), x_test = prepare_tfrecord_data()
             if action is not None:
                 if action == lstm.CONVERT_TRAIN_DATA:
-                    self.embedding_matrix = pickle.load(open(E_M_FILE, "rb"))
+                    self.embedding_matrix = pickle.load(open(self.E_M_FILE, "rb"))
                     lstm.logger.debug("Only build train test data, embedding loading from pickle")
                     return self.prepare_tfrecord_data(embedding=False, action=action)
             else:

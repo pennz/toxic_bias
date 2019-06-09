@@ -55,6 +55,21 @@ so steps:
 3. retest , check for this identity( and others), what is the effect (to speed things 20, all 20% test set)
 4. re-iterate
 
+## data
+1. balance the data
+2. run identity networks (check if it is usable)(to use as the data to reduce the bias)
+3. add other features, if we decrease the identity affects to the final prediction
+4. use other hand picked features, like length / complexity of grammar (feature engineering)
+
+## what other people do 
+debiased word embedding
+gender swap (GS) augment the training data by swapping (somewhat not ideal, as some might asymmetric, but should more positive benefit overall)
+
+so the key is like to re-balance data...
+
+## embedding
+Add back two embedding. it is like transfer learning
+
 
  differently? not just see gay and then treat it as toxic
  
@@ -81,6 +96,78 @@ as we change the threshold for deciding actual pos/neg, the predicted value
 is not changed, it means our model, not mapping text to toxity very will?
 Ans: **no**, just threshold larger, the ones above threshold should really toxic, 
 so it is easier for our model to predict, so the score is high
+
+## for identity
+```
+[INFO]2019-06-09 12:18:21,015:main:restore from the model file /content/gdrivedata/My Drive/_male_0.hdf5 -> done
+
+
+
+
+2019-06-09 12:18:21.106084: I tensorflow/stream_executor/dso_loader.cc:152] successfully opened CUDA library libcublas.so.10.0 locally
+[INFO]2019-06-09 12:19:45,525:main:for male, predict_sensitivity is 0.9684783694674792
+[INFO]2019-06-09 12:19:45,528:main:restore from the model file
+2019-06-09 12:19:48.241816: W tensorflow/core/framework/allocator.cc:124] Allocation of 388579200 exceeds 10% of system memory.
+[INFO]2019-06-09 12:19:49,482:main:restore from the model file /content/gdrivedata/My Drive/_female_0.hdf5 -> done
+
+
+
+
+[INFO]2019-06-09 12:21:12,640:main:for female, predict_sensitivity is 0.9713341774155259
+[INFO]2019-06-09 12:21:12,648:main:restore from the model file
+2019-06-09 12:21:15.465765: W tensorflow/core/framework/allocator.cc:124] Allocation of 388579200 exceeds 10% of system memory.
+[INFO]2019-06-09 12:21:16,843:main:restore from the model file /content/gdrivedata/My Drive/_homosexual_gay_or_lesbian_0.hdf5 -> done
+
+
+
+
+[INFO]2019-06-09 12:22:40,449:main:for homosexual_gay_or_lesbian, predict_sensitivity is 0.9630606860158312
+[INFO]2019-06-09 12:22:40,453:main:restore from the model file
+2019-06-09 12:22:44.097960: W tensorflow/core/framework/allocator.cc:124] Allocation of 388579200 exceeds 10% of system memory.
+[INFO]2019-06-09 12:22:45,604:main:restore from the model file /content/gdrivedata/My Drive/_christian_0.hdf5 -> done
+
+
+
+
+[INFO]2019-06-09 12:24:09,075:main:for christian, predict_sensitivity is 0.9234235502858591
+[INFO]2019-06-09 12:24:09,082:main:restore from the model file
+2019-06-09 12:24:12.828029: W tensorflow/core/framework/allocator.cc:124] Allocation of 388579200 exceeds 10% of system memory.
+[INFO]2019-06-09 12:24:14,514:main:restore from the model file /content/gdrivedata/My Drive/_jewish_0.hdf5 -> done
+
+
+
+
+[INFO]2019-06-09 12:25:38,179:main:for jewish, predict_sensitivity is 0.9930929686420776
+[INFO]2019-06-09 12:25:38,181:main:restore from the model file
+[INFO]2019-06-09 12:25:43,066:main:restore from the model file /content/gdrivedata/My Drive/_muslim_0.hdf5 -> done
+
+
+
+
+[INFO]2019-06-09 12:27:06,766:main:for muslim, predict_sensitivity is 0.9664395403234008
+[INFO]2019-06-09 12:27:06,768:main:restore from the model file
+[INFO]2019-06-09 12:27:12,055:main:restore from the model file /content/gdrivedata/My Drive/_black_0.hdf5 -> done
+
+
+
+
+[INFO]2019-06-09 12:28:35,736:main:for black, predict_sensitivity is 0.9805321219987021
+[INFO]2019-06-09 12:28:35,737:main:restore from the model file
+[INFO]2019-06-09 12:28:41,476:main:restore from the model file /content/gdrivedata/My Drive/_white_0.hdf5 -> done
+
+
+
+
+[INFO]2019-06-09 12:30:05,492:main:for white, predict_sensitivity is 0.9902733523394265
+[INFO]2019-06-09 12:30:05,493:main:restore from the model file
+[INFO]2019-06-09 12:30:11,336:main:restore from the model file /content/gdrivedata/My Drive/_psychiatric_or_mental_illness_0.hdf5 -> done
+
+
+
+
+[INFO]2019-06-09 12:31:35,339:main:for psychiatric_or_mental_illness, predict_sensitivity is 0.9063036546480255
+[INFO]2019-06-09 12:31:35,340:main:Start run with lr 0.005, decay 0.5, gamma 2.0, BS 1024, NO_ID_IN_TRAIN True, EPOCHS 4, Y_TRAIN_BIN False ALPHA0.666
+```
 ### loss function
 if target value is float, not binary(True/False), then the 
 BCE - ( y*log(y_pred) + (1-y)*log(1-y_pred) ) would not be suitable,
@@ -93,6 +180,15 @@ two ends, but for linear,
 
 ### loss and Z, sigmoid(z)
 we can debug, to check the Z distribution, and to design our loss function.
+
+### continue train...  
+loading existed model and run as LearningRateScheduler setting learning rate to 0.0003125. (0.005/16), then 
+continue training. the result is better...., so best so far runs (4+2) epochs. got 0.929 -> train one more epochs, it is 0.93
+
+#### analysing
+for 'white' subgroup:
+7                          white      0.872848  0.966420  0.861708
+For all the subgroups, (which is not know as input)
 
 ## need to consider group information, and improve the bias thing
 thoughts:
