@@ -99,6 +99,7 @@ def setup_gdrive():
 def mount_gdrive():
     from google.colab import drive
     drive.mount('/content/gdrivedata')
+    "4/ZQF_RbIHCF9ub34Y9_pEV71pY1TroSCzkssAot-qRmZ8PDTwwV79NQ4"
 
     run_process_print(f'touch {TFRECORD_FILDATALAG}')
 
