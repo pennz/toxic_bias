@@ -716,7 +716,7 @@ class KaggleKernel:
 
             else:
                 model = load_model(h5_file, custom_objects={'binary_crossentropy_with_focal': binary_crossentropy_with_focal, 'AttentionRaffel':AttentionRaffel})
-                starter_lr = starter_lr * LEARNING_RATE_DECAY_PER_EPOCH ** (EPOCHS+2)
+                starter_lr = starter_lr * LEARNING_RATE_DECAY_PER_EPOCH ** (EPOCHS)
                 self.model = model
                 logger.debug('restore from the model file {} -> done'.format(h5_file))
 
@@ -1401,7 +1401,7 @@ def main(argv):
                 'prefix': prefix,
                 're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
                 'predict-only': predict_only,
-                'starter_lr': STARTER_LEARNING_RATE / 4
+                'starter_lr': STARTER_LEARNING_RATE/8
             })
 
             if NO_AUX:
@@ -1411,11 +1411,10 @@ def main(argv):
                 preds = preds[0]
         # else:
         #    preds = pickle.load(open('predicts', 'rb'))
-        kernel.calculate_metrics_and_print(preds)
         pd.options.display.float_format = '{:,.2f}'.format
         pd.options.display.max_colwidth = 140
+        kernel.calculate_metrics_and_print(preds)
         # df[df.white & (df.target_orig<0.5) & (df.lstm > 0.5)][['comment_text','lstm','target_orig']].head()
-        set_trace()
         #kernel.evaluate_model_and_print(preds, 0.55)
 
         # todo later we could split train/test, to see overfit thing, preds here are all ones with identity, need to
