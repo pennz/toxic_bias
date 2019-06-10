@@ -4,7 +4,7 @@ import gc
 import psutil
 
 USER_NAME='pengyu'
-TFRECORD_FILDATALAG = '.tf_record_saved'
+TFRECORD_FILDATA_FLAG = '.tf_record_saved'
 GDRIVE_DOWNLOAD_DEST = '/proc/driver/nvidia'
 
 def run_commans(commands, timeout=30):
@@ -100,7 +100,7 @@ def mount_gdrive():
     from google.colab import drive
     drive.mount('/content/gdrivedata')
 
-    run_process_print(f'touch {TFRECORD_FILDATALAG}')
+    run_process_print(f'touch {TFRECORD_FILDATA_FLAG}')
 
 
 #setup_gdrive()
@@ -147,7 +147,7 @@ def download_lstm_from_gdrive():
         #./gdrive download   # predicts result (for target)
         #./gdrive download   # identity model
         #mv lstm_data/* . 
-        touch """+TFRECORD_FILDATALAG
+        touch """ + TFRECORD_FILDATA_FLAG
         ,
         timeout=60*10
     )
@@ -169,18 +169,19 @@ if os.getcwd().find('lstm') > 0:
 else:
     #do_gc()
     if not os.path.isfile('.env_setup_done'):
+        try:
+            mount_gdrive()
+        except ModuleNotFoundError:
+            setup_gdrive()
+            download_lstm_from_gdrive()
+
         if not quick:
-            setup_kaggle()
-            if not os.path.isdir("../input"):
+            if not os.path.isdir("../input") and not os.path.isdir('/content/gdrivedata/My Drive/'):
+                setup_kaggle()
                 download_kaggle_data()
-            list_submisstion()
+                list_submisstion()
             pip_install_thing()
-            try:
-                mount_gdrive()
-            except ModuleNotFoundError:
-                setup_gdrive()
-                download_lstm_from_gdrive()
-        run_process_print('export PATH=$PWD:$PATH') # not helpful
+        #run_process_print('export PATH=$PWD:$PATH') # not helpful, subshell
         run_process_print('touch .env_setup_done')
 
 up()  # this is needed always

@@ -1012,7 +1012,7 @@ class EmbeddingHandler:
                 if not os.path.isdir(self.INPUT_DATA_DIR):
                     self.INPUT_DATA_DIR = '/home/pengyu/works/input/jigsaw-unintended-bias-in-toxicity-classification/'
                 if not os.path.isdir(self.INPUT_DATA_DIR):
-                    self.INPUT_DATA_DIR = './'
+                    self.INPUT_DATA_DIR = self.BIN_FOLDER  # put same folder in google drive
                 self.test_df_id = pd.read_csv(self.INPUT_DATA_DIR + 'test.csv').id  # only id series is needed for generating submission csv file
 
             if action is not None:  # exist data, need to convert data, so put after read from pickle
