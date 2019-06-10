@@ -57,8 +57,9 @@ class AttentionRaffel(Layer):
         :param bias:
         :param kwargs:
         """
+        super(AttentionRaffel, self).__init__(**kwargs)
         self.supports_masking = True
-        self.init = initializers.get('glorot_uniform')
+        self.init = 'glorot_uniform'
 
         self.W_regularizer = regularizers.get(W_regularizer)
         self.b_regularizer = regularizers.get(b_regularizer)
@@ -69,7 +70,6 @@ class AttentionRaffel(Layer):
         self.bias = bias
         self.step_dim = step_dim
         self.features_dim = 0
-        super(AttentionRaffel,self).__init__(**kwargs)
 
     def get_config(self):
         config = {
@@ -96,7 +96,7 @@ class AttentionRaffel(Layer):
         assert len(input_shape) == 3
 
         self.W = self.add_weight('{}_W'.format(self.name),
-                                 (input_shape[-1],),
+                                 (int(input_shape[-1]),),
                                  initializer=self.init,
                                  regularizer=self.W_regularizer,
                                  constraint=self.W_constraint)
@@ -104,7 +104,7 @@ class AttentionRaffel(Layer):
 
         if self.bias:
             self.b = self.add_weight('{}_b'.format(self.name),
-                                     (input_shape[1],),
+                                     (int(input_shape[1]),),
                                      initializer='zero',
                                      regularizer=self.b_regularizer,
                                      constraint=self.b_constraint)
