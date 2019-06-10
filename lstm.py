@@ -36,7 +36,7 @@ LSTM_UNITS = 128
 DENSE_HIDDEN_UNITS = 4 * LSTM_UNITS
 RES_DENSE_HIDDEN_UNITS = 5
 
-EPOCHS = 4  # 4 seems good for current setting, more training will help for the final score
+EPOCHS = 8  # 4 seems good for current setting, more training will help for the final score
 
 
 from tensorflow.keras import initializers, regularizers, constraints
@@ -320,6 +320,7 @@ class KaggleKernel:
     def load_data(self, action):
         if self.emb is None:
             self.emb = d.EmbeddingHandler()
+
         self.train_X, self.train_y, self.train_y_aux, self.to_predict_X, self.embedding_matrix = self.emb.data_prepare(
             action)
         if Y_TRAIN_BIN:
@@ -532,7 +533,7 @@ class KaggleKernel:
         params['check_point_path'] = file_name
         target_subgroup = labels[:, d.IDENTITY_COLUMNS.index(subgroup)]
 
-        if RESTART_TRAIN or not os.path.isfile(file_name):
+        if RESTART_TRAIN_ID or not os.path.isfile(file_name):
             model = self.build_identity_model(1)  # one model per identity...
             self.run_model_train(model, features, target_subgroup, params)
         else:
@@ -541,22 +542,24 @@ class KaggleKernel:
                                                           'binary_sensitivity': binary_sensitivity,
                                                           'binary_specificity': binary_specificity})
 
+            logger.info(f"restore from the model file {file_name} -> done\n\n\n\n")
+
             continue_train = params.get('continue_train', False)
             if continue_train:
                 params['starter_lr'] = params['starter_lr'] / 16
+                logger.debug(f'continue train with learning rate /16')
                 self.run_model_train(model, features, target_subgroup, params)
 
-            logger.info(f"restore from the model file {file_name} -> done\n\n\n\n")
-            identity_predict = self.run_model(model, 'predict', self.train_X)
-            identity_predict_for_metric = identity_predict[self.identity_idx]
+        identity_predict = self.run_model(model, 'predict', self.train_X)
+        identity_predict_for_metric = identity_predict[self.identity_idx]
 
-            s = binary_sensitivity_np(identity_predict_for_metric.reshape(-1), target_subgroup)
-            logger.info(f'for {subgroup}, predict_sensitivity is {s}')
+        s = binary_sensitivity_np(identity_predict_for_metric.reshape(-1), target_subgroup)
+        logger.info(f'for {subgroup}, predict_sensitivity is {s}')
 
-            predict_file_name = f'{prefix}_{subgroup}_pred.pkl'
-            pickle.dump(identity_predict, open(predict_file_name, 'wb'))
-
-
+        predict_file_name = f'{prefix}_{subgroup}_pred.pkl'
+        global  id_preds
+        id_preds[subgroup] = identity_predict
+        pickle.dump(identity_predict, open(predict_file_name, 'wb'))
             # self._val_index = val_ind  # for debug
             # pred = model.predict(self.train_X[val_ind], verbose=2)
             # self.oof_preds[val_ind] += pred
@@ -647,7 +650,6 @@ class KaggleKernel:
         # + , - infinity, we cannot use least square error, we use maximum likelihood, the line
         # can still be imagined to there. for every w guess, we have a log-likelihood for the
         # line. we need to find the ML line
-
         return model
 
     def run_lstm_model(self, final_train=False, n_splits=5, predict_ones_with_identity=True, train_test_split=True,
@@ -684,7 +686,7 @@ class KaggleKernel:
                 h5_file = prefix + '_attention_lstm_' + f'{fold}.hdf5'  # we could load with file name, then remove and save to new one
 
             ckpt = ModelCheckpoint(h5_file, save_best_only=True, verbose=1)
-            early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=1)
+            early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=2)
 
             starter_lr = params.get('starter_lr', STARTER_LEARNING_RATE)
             # model thing
@@ -1154,7 +1156,7 @@ parser.add_argument('--train_steps', default=2, type=int,
 parser.add_argument('--learning_rate', default=0.001, type=float,
                     help='learing rate')
 
-DEBUG = False
+DEBUG = True
 ## all for debug
 preds = None
 kernel = None
@@ -1165,11 +1167,12 @@ y_res_pred = None
 STARTER_LEARNING_RATE = 5e-3 # as the BCE we adopted...
 LEARNING_RATE_DECAY_PER_EPOCH = 0.5
 
-IDENTITY_RUN = False
+IDENTITY_RUN = True
 TARGET_RUN = "lstm"
 PRD_ONLY = False
-RESTART_TRAIN = True
+RESTART_TRAIN = False
 RESTART_TRAIN_RES = True
+RESTART_TRAIN_ID = False
 
 NO_AUX = True
 Y_TRAIN_BIN = False  # with True, slightly worse
@@ -1350,9 +1353,9 @@ def main(argv):
         # action = TRAIN_DATA_EXCLUDE_IDENDITY_ONES
         action = CONVERT_DATA_Y_NOT_BINARY
     else:
-        if EXCLUDE_IDENTITY_IN_TRAIN:
+        if EXCLUDE_IDENTITY_IN_TRAIN and not IDENTITY_RUN:  # for identity, need to predict for all train data
             action = TRAIN_DATA_EXCLUDE_IDENDITY_ONES
-    if not RESTART_TRAIN:
+    if not (RESTART_TRAIN or RESTART_TRAIN_ID or RESTART_TRAIN_RES):
         action = DATA_ACTION_NO_NEED_LOAD_EMB_M  # loading model from h5 file, no need load emb matrix (save memory)
     kernel = KaggleKernel(action=action)
     logger.debug(action)
@@ -1365,7 +1368,9 @@ def main(argv):
 
     if IDENTITY_RUN:
         # preds = np.where(preds >= 0.5, True, False) no need recording to API description, but why auc value can change?
-        for idtt in ['psychiatric_or_mental_illness']:  #d.IDENTITY_COLUMNS:
+        #for idtt in ['psychiatric_or_mental_illness']:  #d.IDENTITY_COLUMNS:
+        for idtt in [ 'male', 'female', 'homosexual_gay_or_lesbian', 'christian', 'jewish',
+    'muslim', 'black', 'white', 'psychiatric_or_mental_illness'][6:]:
             kernel.run_identity_model(idtt, kernel.train_X_identity, kernel.train_y_identity, params={
                 'prefix': prefix,
                 'starter_lr': STARTER_LEARNING_RATE,
@@ -1375,9 +1380,10 @@ def main(argv):
                 'validation_split': 0.05,
                 'no_check_point': False,  # save check point or not
                 'verbose': 2,
-                'continue_train': True
+                'continue_train': False  # just predict, do not train this time
             })
 
+        set_trace()
         return
 
     if TARGET_RUN == 'res':
@@ -1399,7 +1405,7 @@ def main(argv):
                 'prefix': prefix,
                 're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
                 'predict-only': predict_only,
-                'starter_lr': STARTER_LEARNING_RATE/8
+                'starter_lr': STARTER_LEARNING_RATE
             })
 
             if NO_AUX:
@@ -1440,6 +1446,8 @@ if os.path.isfile('.ana_result'):
     TARGET_RUN = "lstm"
     PRD_ONLY = False
     RESTART_TRAIN_RES = False
+
+id_preds = {}
 
 if __name__ == '__main__':
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)
