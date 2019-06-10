@@ -38,7 +38,6 @@ RES_DENSE_HIDDEN_UNITS = 5
 
 EPOCHS = 4  # 4 seems good for current setting, more training will help for the final score
 
-print(tf.__version__)
 
 from tensorflow.keras import initializers, regularizers, constraints
 
@@ -581,9 +580,9 @@ class KaggleKernel:
         x = Bidirectional(CuDNNLSTM(LSTM_UNITS, return_sequences=True))(x)
 
         hidden = concatenate([
-            #AttentionRaffel(d.MAX_LEN, name="attention_after_lstm")(x),
+            AttentionRaffel(d.MAX_LEN, name="attention_after_lstm")(x),
             GlobalMaxPooling1D()(x),
-            GlobalAveragePooling1D()(x),
+            #GlobalAveragePooling1D()(x),
         ])
 
         activate_type = hidden_act
