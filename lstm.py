@@ -584,8 +584,8 @@ class KaggleKernel:
 
         hidden = concatenate([
             AttentionRaffel(d.MAX_LEN, name="attention_after_lstm")(x),
-            GlobalMaxPooling1D()(x),
-            #GlobalAveragePooling1D()(x),
+            #GlobalMaxPooling1D()(x),
+            GlobalAveragePooling1D()(x),
         ])
 
         activate_type = hidden_act
@@ -709,13 +709,11 @@ class KaggleKernel:
                     else:
                         model = self.build_lstm_model_customed(0, with_aux=False,
                         metrics=[#tf.keras.metrics.Precision(), tf.keras.metrics.Recall(), tf.keras.metrics.SpecificityAtSensitivity(0.50),
-                            binary_crossentropy, #tf.keras.metrics.Mean(),
                             mean_absolute_error,
-                        tf.keras.metrics.SensitivityAtSpecificity(0.9, name='sn_90'),
-                        tf.keras.metrics.SensitivityAtSpecificity(0.95, name='sn_95'),
-                        tf.keras.metrics.SpecificityAtSensitivity(0.90, name="sp_90"),
-                        tf.keras.metrics.SpecificityAtSensitivity(0.95, name="sp_95"),
-                        ])
+                            tf.keras.metrics.SensitivityAtSpecificity(0.9, name='sn_90'),
+                            tf.keras.metrics.SensitivityAtSpecificity(0.95, name='sn_95'),
+                            tf.keras.metrics.SpecificityAtSensitivity(0.90, name="sp_90"),
+                            tf.keras.metrics.SpecificityAtSensitivity(0.95, name="sp_95"),])
                 else:
                     model = self.build_lstm_model(len(self.train_y_aux[0]))
                 self.model = model
@@ -996,21 +994,18 @@ class KaggleKernel:
         return [df.index.get_loc(label) for label in index] # selected the items
 
     def prepare_weight_for_subgroup_balance(self):
-''' to see how other people handle weights [this kernel](https://www.kaggle.com/thousandvoices/simple-lstm)
-    sample_weights = np.ones(len(x_train), dtype=np.float32)
-    # more weights for the ones with identities, more identities, more weights
-    sample_weights += train_df[IDENTITY_COLUMNS].sum(axis=1)
-    # the toxic ones, reverse identity
-    sample_weights += train_df[TARGET_COLUMN] * (~train_df[IDENTITY_COLUMNS]).sum(axis=1)
-    # none toxic, non-toxic, with identity, more weight for this, so the weights are more or less balanced
-    sample_weights += (~train_df[TARGET_COLUMN]) * train_df[IDENTITY_COLUMNS].sum(axis=1) * 5
-    sample_weights /= sample_weights.mean()
-And we know the identies now, so we balance all the ones,
-for every subgroup, we calculate the related weight to balance
-
-
-
-'''
+        ''' to see how other people handle weights [this kernel](https://www.kaggle.com/thousandvoices/simple-lstm)
+            sample_weights = np.ones(len(x_train), dtype=np.float32)
+            # more weights for the ones with identities, more identities, more weights
+            sample_weights += train_df[IDENTITY_COLUMNS].sum(axis=1)
+            # the toxic ones, reverse identity
+            sample_weights += train_df[TARGET_COLUMN] * (~train_df[IDENTITY_COLUMNS]).sum(axis=1)
+            # none toxic, non-toxic, with identity, more weight for this, so the weights are more or less balanced
+            sample_weights += (~train_df[TARGET_COLUMN]) * train_df[IDENTITY_COLUMNS].sum(axis=1) * 5
+            sample_weights /= sample_weights.mean()
+        And we know the identies now, so we balance all the ones,
+        for every subgroup, we calculate the related weight to balance
+        '''
         pass
 
     def res_subgroup(self, subgroup, y_pred):
