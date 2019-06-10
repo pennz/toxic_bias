@@ -707,7 +707,15 @@ class KaggleKernel:
                                                                            #tf.keras.metrics.SpecificityAtSensitivity(0.98), tf.keras.metrics.SpecificityAtSensitivity(0.99), tf.keras.metrics.SpecificityAtSensitivity(1.00)
                         # Sensitivity measures the proportion of actual positives that are correctly identified as such (tp / (tp + fn)).
                     else:
-                        model = self.build_lstm_model_customed(0, with_aux=False)
+                        model = self.build_lstm_model_customed(0, with_aux=False,
+                        metrics=[#tf.keras.metrics.Precision(), tf.keras.metrics.Recall(), tf.keras.metrics.SpecificityAtSensitivity(0.50),
+                            binary_crossentropy, #tf.keras.metrics.Mean(),
+                            mean_absolute_error,
+                        tf.keras.metrics.SensitivityAtSpecificity(0.9, name='sn_90'),
+                        tf.keras.metrics.SensitivityAtSpecificity(0.95, name='sn_95'),
+                        tf.keras.metrics.SpecificityAtSensitivity(0.90, name="sp_90"),
+                        tf.keras.metrics.SpecificityAtSensitivity(0.95, name="sp_95"),
+                        ])
                 else:
                     model = self.build_lstm_model(len(self.train_y_aux[0]))
                 self.model = model
@@ -747,7 +755,6 @@ class KaggleKernel:
             #              ckpt,
             #              tf_fit_batch_logger])
             if predict_only:
-                set_trace()
                 break  # do not fit
             prog_bar_logger = NBatchProgBarLogger(display_per_batches=int(1300000 / 30 / BATCH_SIZE), early_stop=True,
                                       patience_displays=3)
@@ -769,7 +776,7 @@ class KaggleKernel:
                               verbose=1
                           ),
                           early_stop,
-                          ckpt,
+                          #ckpt,
                           # tf_fit_batch_logger,
                           prog_bar_logger
                       ])
@@ -988,6 +995,24 @@ class KaggleKernel:
 
         return [df.index.get_loc(label) for label in index] # selected the items
 
+    def prepare_weight_for_subgroup_balance(self):
+''' to see how other people handle weights [this kernel](https://www.kaggle.com/thousandvoices/simple-lstm)
+    sample_weights = np.ones(len(x_train), dtype=np.float32)
+    # more weights for the ones with identities, more identities, more weights
+    sample_weights += train_df[IDENTITY_COLUMNS].sum(axis=1)
+    # the toxic ones, reverse identity
+    sample_weights += train_df[TARGET_COLUMN] * (~train_df[IDENTITY_COLUMNS]).sum(axis=1)
+    # none toxic, non-toxic, with identity, more weight for this, so the weights are more or less balanced
+    sample_weights += (~train_df[TARGET_COLUMN]) * train_df[IDENTITY_COLUMNS].sum(axis=1) * 5
+    sample_weights /= sample_weights.mean()
+And we know the identies now, so we balance all the ones,
+for every subgroup, we calculate the related weight to balance
+
+
+
+'''
+        pass
+
     def res_subgroup(self, subgroup, y_pred):
         # first prepare the data
         # 1. the subgroup
@@ -1156,7 +1181,7 @@ parser.add_argument('--train_steps', default=2, type=int,
 parser.add_argument('--learning_rate', default=0.001, type=float,
                     help='learing rate')
 
-DEBUG = True
+DEBUG = False
 ## all for debug
 preds = None
 kernel = None
@@ -1167,17 +1192,17 @@ y_res_pred = None
 STARTER_LEARNING_RATE = 5e-3 # as the BCE we adopted...
 LEARNING_RATE_DECAY_PER_EPOCH = 0.5
 
-IDENTITY_RUN = True
+IDENTITY_RUN = False
 TARGET_RUN = "lstm"
 PRD_ONLY = False
-RESTART_TRAIN = False
+RESTART_TRAIN = True
 RESTART_TRAIN_RES = True
 RESTART_TRAIN_ID = False
 
 NO_AUX = True
 Y_TRAIN_BIN = False  # with True, slightly worse
 #tf.keras.metrics.SpecificityAtSensitivity(0.50), TRAIN_BIN need to be as we use this metrics, or we can customize
-FOCAL_LOSS = True
+FOCAL_LOSS = False
 FOCAL_LOSS_GAMMA = 2.
 ALPHA = 0.666
 #GAMMA works better 2. with BS 1024
