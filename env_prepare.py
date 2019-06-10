@@ -5,7 +5,7 @@ import psutil
 
 USER_NAME='pengyu'
 TFRECORD_FILDATALAG = '.tf_record_saved'
-GDRIVE_DOWNLOAD_DEST = './'
+GDRIVE_DOWNLOAD_DEST = '/proc/driver/nvidia'
 
 def run_commans(commands, timeout=30):
     for c in commands.splitlines():
