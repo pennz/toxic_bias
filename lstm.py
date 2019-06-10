@@ -3,12 +3,12 @@ import argparse
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-#from tensorflow import Session, Graph
+from tensorflow import Session, Graph
 
 from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.layers import Layer
 from tensorflow.keras.layers import Input, Dense, Embedding, SpatialDropout1D, add, concatenate, BatchNormalization, Activation
-from tensorflow.keras.layers import LSTM, Bidirectional, GlobalMaxPooling1D, GlobalAveragePooling1D, PReLU
+from tensorflow.keras.layers import CuDNNLSTM, Bidirectional, GlobalMaxPooling1D, GlobalAveragePooling1D, PReLU
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint, ProgbarLogger
 from tensorflow.keras.metrics import mean_absolute_error, binary_crossentropy, mean_squared_error
@@ -31,14 +31,13 @@ from tensorflow.python import debug as tf_debug
 # NUM_MODELS = 2  # might be helpful but...
 
 # BATCH_SIZE = 2048 * 2  # for cloud server runing
-BATCH_SIZE = 1024//4  # for cloud server runing
+BATCH_SIZE = 1024  # for cloud server runing
 LSTM_UNITS = 128
 DENSE_HIDDEN_UNITS = 4 * LSTM_UNITS
 RES_DENSE_HIDDEN_UNITS = 5
 
 EPOCHS = 4  # 4 seems good for current setting, more training will help for the final score
 
-print(tf.__version__)
 
 from tensorflow.keras import initializers, regularizers, constraints
 
@@ -171,7 +170,7 @@ def identity_model(features, labels, mode, params):
 
     x = Embedding(*embedding_matrix.shape, weights=[embedding_matrix], trainable=False)(words)
     x = SpatialDropout1D(0.2)(x)
-    x = Bidirectional(LSTM(LSTM_UNITS, return_sequences=True))(x)
+    x = Bidirectional(CuDNNLSTM(LSTM_UNITS, return_sequences=True))(x)
 
     hidden = concatenate([
         GlobalMaxPooling1D()(x),
@@ -505,7 +504,7 @@ class KaggleKernel:
         words = Input(shape=(None,))
         x = Embedding(*self.embedding_matrix.shape, weights=[self.embedding_matrix], trainable=False)(words)
         x = SpatialDropout1D(0.2)(x)
-        x = Bidirectional(LSTM(int(LSTM_UNITS // 2), return_sequences=True))(x)
+        x = Bidirectional(CuDNNLSTM(int(LSTM_UNITS // 2), return_sequences=True))(x)
 
         hidden = concatenate([
             GlobalMaxPooling1D()(x),
@@ -577,8 +576,8 @@ class KaggleKernel:
         x = Embedding(*self.embedding_matrix.shape, weights=[self.embedding_matrix], trainable=False)(words)
 
         x = SpatialDropout1D(0.2)(x)
-        x = Bidirectional(LSTM(LSTM_UNITS, activation='tanh', recurrent_activation='sigmoid', return_sequences=True))(x)
-        x = Bidirectional(LSTM(LSTM_UNITS, activation='tanh', recurrent_activation='sigmoid', return_sequences=True))(x)
+        x = Bidirectional(CuDNNLSTM(LSTM_UNITS, return_sequences=True))(x)
+        x = Bidirectional(CuDNNLSTM(LSTM_UNITS, return_sequences=True))(x)
 
         hidden = concatenate([
             AttentionRaffel(d.MAX_LEN, name="attention_after_lstm")(x),
@@ -615,8 +614,8 @@ class KaggleKernel:
         logger.info("Embedding fine, here the type of embedding matrix is {}".format(type(self.embedding_matrix)))
 
         x = SpatialDropout1D(0.2)(x)
-        x = Bidirectional(LSTM(LSTM_UNITS, return_sequences=True))(x)
-        x = Bidirectional(LSTM(LSTM_UNITS, return_sequences=True))(x)
+        x = Bidirectional(CuDNNLSTM(LSTM_UNITS, return_sequences=True))(x)
+        x = Bidirectional(CuDNNLSTM(LSTM_UNITS, return_sequences=True))(x)
 
         hidden = concatenate([
             GlobalMaxPooling1D()(x),
@@ -674,11 +673,9 @@ class KaggleKernel:
 
         for fold in range(n_splits):
             if DEBUG:
-                #K.set_session(tf_debug.LocalCLIDebugWrapperSession(tf.compat.v1.Session()))
-                pass
+                K.set_session(tf_debug.LocalCLIDebugWrapperSession(tf.Session()))
             else:
-                #K.clear_session()  # so it will start over
-                pass
+                K.clear_session()  # so it will start over
             tr_ind, val_ind = splits[fold]
 
             if NO_AUX:
@@ -997,43 +994,44 @@ class KaggleKernel:
         # prepare the network (load from the existed model, only change the last perception layer(as data not enough), then just train with the error related data)
         # 1. load the model
         X,y,_ = self.locate_data_in_np_train(idx_train)
-        #graph1 = Graph()
-        #with graph1.as_default():
-        #    session1 = Session()
-        #    with session1.as_default():
-        h5_file = '/proc/driver/nvidia/white_G2.0_attention_lstm_NOAUX_0.hdf5'
-        if RESTART_TRAIN_RES or not os.path.isfile(h5_file):
-            self.res_model = self.build_res_model(subgroup,
-                    loss=binary_crossentropy_with_focal,
-                    metrics=[binary_crossentropy, mean_absolute_error,])
-            self.res_model.summary()
+        graph1 = Graph()
+        with graph1.as_default():
+            session1 = Session()
+            with session1.as_default():
+                h5_file = '/proc/driver/nvidia/white_G2.0_attention_lstm_NOAUX_0.hdf5'
+                if RESTART_TRAIN_RES or not os.path.isfile(h5_file):
+                    self.res_model = self.build_res_model(subgroup,
+                            loss=binary_crossentropy_with_focal,
+                            metrics=[binary_crossentropy, mean_absolute_error,])
+                    self.res_model.summary()
 
-            self.run_model(self.res_model, 'train', X,y, params={
-                'prefix': "/proc/driver/nvidia/"+subgroup+"_",
-                'starter_lr': STARTER_LEARNING_RATE/8,
-                'epochs': 70,
-                'patience': 5,
-                'lr_decay': 0.8,
-                'validation_split': 0.05,
-                'no_check_point': True
-            })
-        else:  # file exit and restart_train==false
-            logger.debug(f'load res model from {h5_file}')
-            self.res_model = load_model(h5_file, custom_objects={'binary_crossentropy_with_focal': binary_crossentropy_with_focal, 'AttentionRaffel':AttentionRaffel})
-            self.res_model.summary()
+                    self.run_model(self.res_model, 'train', X,y, params={
+                        'prefix': "/proc/driver/nvidia/"+subgroup+"_",
+                        'starter_lr': STARTER_LEARNING_RATE/8,
+                        'epochs': 70,
+                        'patience': 5,
+                        'lr_decay': 0.8,
+                        'validation_split': 0.05,
+                        'no_check_point': True
+                    })
+                else:  # file exit and restart_train==false
+                    logger.debug(f'load res model from {h5_file}')
+                    self.res_model = load_model(h5_file, custom_objects={'binary_crossentropy_with_focal': binary_crossentropy_with_focal, 'AttentionRaffel':AttentionRaffel})
+                    self.res_model.summary()
 
-        #y_res_pred = self.run_model(self.res_model, 'predict', X[idx_val])  # X all data with identity
-        subgroup_idx = self.locate_subgroup_index_in_np_train(subgroup)
-        mapped_subgroup_idx = self.to_identity_index(subgroup_idx)
+                #y_res_pred = self.run_model(self.res_model, 'predict', X[idx_val])  # X all data with identity
+                subgroup_idx = self.locate_subgroup_index_in_np_train(subgroup)
+                mapped_subgroup_idx = self.to_identity_index(subgroup_idx)
 
-        X_all, y_all = self.train_X_identity, self.train_y_identity
+                X_all, y_all = self.train_X_identity, self.train_y_identity
 
-        logger.info("Start predict for all identities")
-        y_res_pred_all_group = self.run_model(self.res_model, 'predict', X_all)
-        logger.info("Done predict for all identities")
+                logger.info("Start predict for all identities")
+                y_res_pred_all_group = self.run_model(self.res_model, 'predict', X_all)
+                logger.info("Done predict for all identities")
 
-        y_res_pred_all_train_val = y_res_pred_all_group[mapped_subgroup_idx]
-        y_res_pred = y_res_pred_all_group[self.to_identity_index(idx_val)]  # find the index
+                y_res_pred_all_train_val = y_res_pred_all_group[mapped_subgroup_idx]
+
+                y_res_pred = y_res_pred_all_group[self.to_identity_index(idx_val)]  # find the index
 
         # 2. modify, change to not training
         #       after add_1, add another dense layer, (so totally not change exited structure(might affect other subgroup?)
