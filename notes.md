@@ -45,6 +45,10 @@ for bold ones, they are the identities with more than 500
  examples in the test set, and will be included in the evaluation
  calculation. i.e., subgroups, so, 
  
+ **Do you remember how target was created? This is a fraction of voters who considered the comment to be toxic. Then is is completely normal that 0%, 1/6, 1/5 of voters could think the same.**
+ add other features:
+ 
+ 
 # todo
  
 *todo* for these subgroups, we can handle !!!!!
@@ -60,6 +64,7 @@ so steps:
 2. run identity networks (check if it is usable)(to use as the data to reduce the bias)
 3. add other features, if we decrease the identity affects to the final prediction
 4. use other hand picked features, like length / complexity of grammar (feature engineering)
+**length** **word count** might be useful feature (also length/words)
 
 ## what other people do 
 debiased word embedding

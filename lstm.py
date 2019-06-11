@@ -5,14 +5,14 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow import Session, Graph
 
-from keras.models import Model, load_model
-from keras.engine.topology import Layer
-from keras.layers import Input, Dense, Embedding, SpatialDropout1D, add, concatenate, BatchNormalization, Activation
-from keras.layers import CuDNNLSTM, Bidirectional, GlobalMaxPooling1D, GlobalAveragePooling1D, PReLU
-from keras.optimizers import Adam
-from keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint, ProgbarLogger
-from keras.metrics import mean_absolute_error, binary_crossentropy, mean_squared_error
-import keras.backend as K
+from tensorflow.keras.models import Model, load_model
+from tensorflow.keras.layers import Layer
+from tensorflow.keras.layers import Input, Dense, Embedding, SpatialDropout1D, add, concatenate, BatchNormalization, Activation
+from tensorflow.keras.layers import CuDNNLSTM, Bidirectional, GlobalMaxPooling1D, GlobalAveragePooling1D, PReLU
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint, ProgbarLogger
+from tensorflow.keras.metrics import mean_absolute_error, binary_crossentropy, mean_squared_error
+import tensorflow.keras.backend as K
 
 from tensorflow.python.ops import math_ops
 from sklearn.model_selection import KFold
@@ -36,10 +36,9 @@ LSTM_UNITS = 128
 DENSE_HIDDEN_UNITS = 4 * LSTM_UNITS
 RES_DENSE_HIDDEN_UNITS = 5
 
-EPOCHS = 4  # 4 seems good for current setting, more training will help for the final score
+EPOCHS = 8  # 4 seems good for current setting, more training will help for the final score?
 
-
-from keras import initializers, regularizers, constraints
+from tensorflow.keras import initializers, regularizers, constraints
 
 # Credits for https://www.kaggle.com/qqgeogor/keras-lstm-attention-glove840b-lb-0-043
 class AttentionRaffel(Layer):
@@ -57,8 +56,9 @@ class AttentionRaffel(Layer):
         :param bias:
         :param kwargs:
         """
+        super(AttentionRaffel, self).__init__(**kwargs)
         self.supports_masking = True
-        self.init = initializers.get('glorot_uniform')
+        self.init = 'glorot_uniform'
 
         self.W_regularizer = regularizers.get(W_regularizer)
         self.b_regularizer = regularizers.get(b_regularizer)
@@ -69,7 +69,6 @@ class AttentionRaffel(Layer):
         self.bias = bias
         self.step_dim = step_dim
         self.features_dim = 0
-        super(AttentionRaffel,self).__init__(**kwargs)
 
     def get_config(self):
         config = {
@@ -96,7 +95,7 @@ class AttentionRaffel(Layer):
         assert len(input_shape) == 3
 
         self.W = self.add_weight('{}_W'.format(self.name),
-                                 (input_shape[-1],),
+                                 (int(input_shape[-1]),),
                                  initializer=self.init,
                                  regularizer=self.W_regularizer,
                                  constraint=self.W_constraint)
@@ -104,7 +103,7 @@ class AttentionRaffel(Layer):
 
         if self.bias:
             self.b = self.add_weight('{}_b'.format(self.name),
-                                     (input_shape[1],),
+                                     (int(input_shape[1]),),
                                      initializer='zero',
                                      regularizer=self.b_regularizer,
                                      constraint=self.b_constraint)
@@ -320,6 +319,7 @@ class KaggleKernel:
     def load_data(self, action):
         if self.emb is None:
             self.emb = d.EmbeddingHandler()
+
         self.train_X, self.train_y, self.train_y_aux, self.to_predict_X, self.embedding_matrix = self.emb.data_prepare(
             action)
         if Y_TRAIN_BIN:
@@ -330,6 +330,8 @@ class KaggleKernel:
                 self.load_identity_data_idx()
                 mask = np.ones(len(self.train_X), np.bool)
                 mask[self.identity_idx] = 0  # reverse indexing
+
+                self.train_mask = mask
 
                 self.train_X = self.train_X[mask]
                 self.train_y = self.train_y[mask]
@@ -532,7 +534,7 @@ class KaggleKernel:
         params['check_point_path'] = file_name
         target_subgroup = labels[:, d.IDENTITY_COLUMNS.index(subgroup)]
 
-        if RESTART_TRAIN or not os.path.isfile(file_name):
+        if RESTART_TRAIN_ID or not os.path.isfile(file_name):
             model = self.build_identity_model(1)  # one model per identity...
             self.run_model_train(model, features, target_subgroup, params)
         else:
@@ -541,22 +543,24 @@ class KaggleKernel:
                                                           'binary_sensitivity': binary_sensitivity,
                                                           'binary_specificity': binary_specificity})
 
+            logger.info(f"restore from the model file {file_name} -> done\n\n\n\n")
+
             continue_train = params.get('continue_train', False)
             if continue_train:
                 params['starter_lr'] = params['starter_lr'] / 16
+                logger.debug(f'continue train with learning rate /16')
                 self.run_model_train(model, features, target_subgroup, params)
 
-            logger.info(f"restore from the model file {file_name} -> done\n\n\n\n")
-            identity_predict = self.run_model(model, 'predict', self.train_X)
-            identity_predict_for_metric = identity_predict[self.identity_idx]
+        identity_predict = self.run_model(model, 'predict', self.train_X)
+        identity_predict_for_metric = identity_predict[self.identity_idx]
 
-            s = binary_sensitivity_np(identity_predict_for_metric.reshape(-1), target_subgroup)
-            logger.info(f'for {subgroup}, predict_sensitivity is {s}')
+        s = binary_sensitivity_np(identity_predict_for_metric.reshape(-1), target_subgroup)
+        logger.info(f'for {subgroup}, predict_sensitivity is {s}')
 
-            predict_file_name = f'{prefix}_{subgroup}_pred.pkl'
-            pickle.dump(identity_predict, open(predict_file_name, 'wb'))
-
-
+        predict_file_name = f'{prefix}_{subgroup}_pred.pkl'
+        global  id_preds
+        id_preds[subgroup] = identity_predict
+        pickle.dump(identity_predict, open(predict_file_name, 'wb'))
             # self._val_index = val_ind  # for debug
             # pred = model.predict(self.train_X[val_ind], verbose=2)
             # self.oof_preds[val_ind] += pred
@@ -581,8 +585,8 @@ class KaggleKernel:
 
         hidden = concatenate([
             AttentionRaffel(d.MAX_LEN, name="attention_after_lstm")(x),
-            GlobalMaxPooling1D()(x),
-            #GlobalAveragePooling1D()(x),
+            GlobalMaxPooling1D()(x),     # with this 0.9125 ...(not enough test...)
+            #GlobalAveragePooling1D()(x),  # a little worse to use this, 0.9124
         ])
 
         activate_type = hidden_act
@@ -647,7 +651,6 @@ class KaggleKernel:
         # + , - infinity, we cannot use least square error, we use maximum likelihood, the line
         # can still be imagined to there. for every w guess, we have a log-likelihood for the
         # line. we need to find the ML line
-
         return model
 
     def run_lstm_model(self, final_train=False, n_splits=5, predict_ones_with_identity=True, train_test_split=True,
@@ -667,6 +670,7 @@ class KaggleKernel:
         prefix = params['prefix']
         re_train = params['re-start-train']
         predict_only = params['predict-only']
+        sample_weights = params.get('sample_weights')
 
         prefix += 'G{:.1f}'.format(FOCAL_LOSS_GAMMA)
 
@@ -686,26 +690,32 @@ class KaggleKernel:
             ckpt = ModelCheckpoint(h5_file, save_best_only=True, verbose=1)
             early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=1)
 
-            starter_lr = STARTER_LEARNING_RATE
+            starter_lr = params.get('starter_lr', STARTER_LEARNING_RATE)
             # model thing
             if re_train or not os.path.isfile(h5_file):
                 if NO_AUX:
                     if FOCAL_LOSS:
                         model = self.build_lstm_model_customed(0, with_aux=False,
-                                                               loss=binary_crossentropy_with_focal,
-                                                               metrics=[#tf.keras.metrics.Precision(), tf.keras.metrics.Recall(), tf.keras.metrics.SpecificityAtSensitivity(0.50),
-                                                                      binary_crossentropy, #tf.keras.metrics.Mean(),
-                                                                        mean_absolute_error,])
-                                                                      #tf.keras.metrics.SensitivityAtSpecificity(0.9, name='sn_90'),
-                                                                      #tf.keras.metrics.SensitivityAtSpecificity(0.95, name='sn_95'),
-                                                                      #tf.keras.metrics.SpecificityAtSensitivity(0.90, name="sp_90"),
-                                                                      #tf.keras.metrics.SpecificityAtSensitivity(0.95, name="sp_95"),
+                                   loss=binary_crossentropy_with_focal,
+                                   metrics=[tf.keras.metrics.Precision(), tf.keras.metrics.Recall(),
+                                           binary_crossentropy, #tf.keras.metrics.Mean(),tf.keras.metrics.SpecificityAtSensitivity(0.50),
+                                           mean_absolute_error,
+                                           tf.keras.metrics.SensitivityAtSpecificity(0.9, name='sn_90'),
+                                           tf.keras.metrics.SensitivityAtSpecificity(0.95, name='sn_95'),
+                                           tf.keras.metrics.SpecificityAtSensitivity(0.90, name="sp_90"),
+                                           tf.keras.metrics.SpecificityAtSensitivity(0.95, name="sp_95"),])
 #                        KaggleKernel.bin_prd_clsf_info_neg,
 #                        KaggleKernel.bin_prd_clsf_info_pos])
                                                                            #tf.keras.metrics.SpecificityAtSensitivity(0.98), tf.keras.metrics.SpecificityAtSensitivity(0.99), tf.keras.metrics.SpecificityAtSensitivity(1.00)
                         # Sensitivity measures the proportion of actual positives that are correctly identified as such (tp / (tp + fn)).
                     else:
-                        model = self.build_lstm_model_customed(0, with_aux=False)
+                        model = self.build_lstm_model_customed(0, with_aux=False,
+                        metrics=[#tf.keras.metrics.Precision(), tf.keras.metrics.Recall(), tf.keras.metrics.SpecificityAtSensitivity(0.50),
+                            mean_absolute_error,
+                            tf.keras.metrics.SensitivityAtSpecificity(0.9, name='sn_90'),
+                            tf.keras.metrics.SensitivityAtSpecificity(0.95, name='sn_95'),
+                            tf.keras.metrics.SpecificityAtSensitivity(0.90, name="sp_90"),
+                            tf.keras.metrics.SpecificityAtSensitivity(0.95, name="sp_95"),])
                 else:
                     model = self.build_lstm_model(len(self.train_y_aux[0]))
                 self.model = model
@@ -713,7 +723,7 @@ class KaggleKernel:
 
             else:
                 model = load_model(h5_file, custom_objects={'binary_crossentropy_with_focal': binary_crossentropy_with_focal, 'AttentionRaffel':AttentionRaffel})
-                starter_lr = starter_lr * LEARNING_RATE_DECAY_PER_EPOCH ** (EPOCHS+2)
+                starter_lr = starter_lr * LEARNING_RATE_DECAY_PER_EPOCH ** (EPOCHS)
                 self.model = model
                 logger.debug('restore from the model file {} -> done'.format(h5_file))
 
@@ -745,16 +755,18 @@ class KaggleKernel:
             #              ckpt,
             #              tf_fit_batch_logger])
             if predict_only:
-                set_trace()
                 break  # do not fit
             prog_bar_logger = NBatchProgBarLogger(display_per_batches=int(1300000 / 30 / BATCH_SIZE), early_stop=True,
                                       patience_displays=3)
+            if sample_weights is not None:
+                logger.debug(f"fitting with sample_weight {sample_weights[:10]}...")
             model.fit(self.train_X,
                       # self.train_y[tr_ind]>0.5,
                       self.train_y,
                       validation_split=0.05,
                       batch_size=BATCH_SIZE,
                       epochs=EPOCHS,
+                      sample_weight=sample_weights,
                       # steps_per_epoch=int(len(self.train_X)*0.95/BATCH_SIZE),
                       verbose=0,
                       # validation_data=(self.train_X[val_ind], self.train_y[val_ind]>0.5),
@@ -768,7 +780,6 @@ class KaggleKernel:
                           ),
                           early_stop,
                           ckpt,
-                          # tf_fit_batch_logger,
                           prog_bar_logger
                       ])
 
@@ -986,6 +997,74 @@ class KaggleKernel:
 
         return [df.index.get_loc(label) for label in index] # selected the items
 
+    def _get_identities(self):
+        prefix = self.emb.BIN_FOLDER
+        #if os.path.isfile(prefix+'train_df.pd'):
+        if False:
+            self.train_df = pickle.load(open(prefix+'train_df.pd', 'rb'))
+        else:
+            for g in d.IDENTITY_COLUMNS:
+                pred = pickle.load(open(f'{prefix}_{g}_pred.pkl', 'rb'))
+                self.train_df[f'{g}_pred'] = pred
+
+        for g in d.IDENTITY_COLUMNS:
+            self.train_df.loc[self.identity_idx,f'{g}_pred'] = self.train_df.loc[self.identity_idx, g]
+
+    def prepare_weight_for_subgroup_balance(self):
+        ''' to see how other people handle weights [this kernel](https://www.kaggle.com/thousandvoices/simple-lstm)
+            sample_weights = np.ones(len(x_train), dtype=np.float32)
+            # more weights for the ones with identities, more identities, more weights
+            sample_weights += train_df[IDENTITY_COLUMNS].sum(axis=1)
+            # the toxic ones, reverse identity (without identity)(average 4~8), so more weights on toxic one without identity
+            sample_weights += train_df[TARGET_COLUMN] * (~train_df[IDENTITY_COLUMNS]).sum(axis=1)
+            # none toxic, non-toxic, with identity, more weight for this, so the weights are more or less balanced
+            sample_weights += (~train_df[TARGET_COLUMN]) * train_df[IDENTITY_COLUMNS].sum(axis=1) * 5
+            sample_weights /= sample_weights.mean()
+
+        And we know the identies now, so we balance all the ones,
+        for every subgroup, we calculate the related weight to balance
+        '''
+        self.train_df = self.emb.train_df
+        self._get_identities()  # for known ones, just skip
+        analyzer = d.TargetDistAnalyzer(self.train_df)
+        o = analyzer.get_distribution_overall()
+        gs = analyzer.get_distribution_subgroups()  # for subgroup, use 0.5 as the limit, continuous info not used... anyway, we try first
+
+        balance_scheme = 'target_bucket_same' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
+
+        def add_weight(balance_scheme, balance_group=False):  # need a parameter for all pos v.s. neg., and for different
+            # target value, how do we balance?
+            # (First we equalize them, then re-balance), just try different balance
+            ones_weights = np.ones(len(self.train_df), dtype=np.float32)
+            #sample_weights = ones_weights.copy()
+
+            gs_weights_ratio = {}
+            gs_weights = {}
+            target_ratios = np.array([dstr[2] for dstr in o])
+            if balance_scheme == 'target_bucket_same':
+                # compare with the background one, then change the weights to the same scale
+                for g,v in gs.items():
+                    gs_weights[g] = ones_weights.copy() # initial, ones
+                    # v is the distribution for ONE subgroup for 0~1 11 target types
+                    gs_weights_ratio[g] = np.divide(target_ratios, np.array([dstr[2] for dstr in v]))
+                    for target_split_idx, ratio in enumerate(gs_weights_ratio[g]):
+                        split_idx_in_df = v[target_split_idx][3]  # [3] is the index
+                        gs_weights[g][split_idx_in_df] *= ratio
+
+            weights_changer = np.transpose([v for v in gs_weights.values()])
+            weights_changer_max = np.amax(weights_changer, axis=1)
+            weights_changer_min = np.amin(weights_changer, axis=1)
+            weights_changer_mean = np.mean(weights_changer, axis=1)
+            weights_changer_merged = ones_weights.copy()
+            weights_changer_merged[weights_changer_mean>1] = weights_changer_max[weights_changer_mean>1]
+            weights_changer_merged[weights_changer_mean<1] = weights_changer_min[weights_changer_mean<1]
+
+            sample_weights = weights_changer_merged/weights_changer_merged.mean()  # normalize
+
+            return sample_weights
+
+        return add_weight(balance_scheme)
+
     def res_subgroup(self, subgroup, y_pred):
         # first prepare the data
         # 1. the subgroup
@@ -1170,13 +1249,20 @@ TARGET_RUN = "lstm"
 PRD_ONLY = False
 RESTART_TRAIN = True
 RESTART_TRAIN_RES = True
+RESTART_TRAIN_ID = False
 
 NO_AUX = True
 Y_TRAIN_BIN = False  # with True, slightly worse
-#tf.keras.metrics.SpecificityAtSensitivity(0.50), TRAIN_BIN need to be as we use this metrics, or we can customize
-FOCAL_LOSS = True
-FOCAL_LOSS_GAMMA = 2.
-ALPHA = 0.666
+
+FOCAL_LOSS = False
+
+FOCAL_LOSS_GAMMA = 0.
+ALPHA = 0.5
+
+#FOCAL_LOSS_GAMMA = 2.
+#ALPHA = 0.666
+#FOCAL_LOSS_GAMMA = 0.
+#ALPHA = 0.7(0.9121)  # 0.9(0.9122), 0.8(0.9123...) (no difference with no focal loss)
 #GAMMA works better 2. with BS 1024
 #GAMMA works better 1.5 with BS 512
 
@@ -1329,6 +1415,9 @@ def binary_crossentropy_with_focal(y_true, y_pred, gamma=FOCAL_LOSS_GAMMA, alpha
         bce = alpha * math_ops.multiply(1. - y_pred, math_ops.multiply(y_true, math_ops.log(y_pred + eps)))
         bce += (1 - alpha) * math_ops.multiply(y_pred,
                                                math_ops.multiply((1. - y_true), math_ops.log(1. - y_pred + eps)))
+    elif 0. - eps <= gamma <= 0. + eps:
+        bce = alpha * math_ops.multiply(y_true, math_ops.log(y_pred + eps))
+        bce += (1 - alpha) * math_ops.multiply((1. - y_true), math_ops.log(1. - y_pred + eps))
     else:
         gamma_tensor = tf.broadcast_to(tf.constant(gamma), tf.shape(input=y_pred))
         bce = alpha * math_ops.multiply(math_ops.pow(1. - y_pred, gamma_tensor),
@@ -1350,10 +1439,10 @@ def main(argv):
         # action = TRAIN_DATA_EXCLUDE_IDENDITY_ONES
         action = CONVERT_DATA_Y_NOT_BINARY
     else:
-        if EXCLUDE_IDENTITY_IN_TRAIN:
+        if EXCLUDE_IDENTITY_IN_TRAIN and not IDENTITY_RUN:  # for identity, need to predict for all train data
             action = TRAIN_DATA_EXCLUDE_IDENDITY_ONES
-    if not RESTART_TRAIN:
-        action = DATA_ACTION_NO_NEED_LOAD_EMB_M  # loading model from h5 file, no need load emb matrix (save memory)
+    #if not (RESTART_TRAIN or RESTART_TRAIN_ID or RESTART_TRAIN_RES):
+    #    action = DATA_ACTION_NO_NEED_LOAD_EMB_M  # loading model from h5 file, no need load emb matrix (save memory)
     kernel = KaggleKernel(action=action)
     logger.debug(action)
     kernel.load_identity_data_idx()  # so only predict part of the data
@@ -1365,7 +1454,8 @@ def main(argv):
 
     if IDENTITY_RUN:
         # preds = np.where(preds >= 0.5, True, False) no need recording to API description, but why auc value can change?
-        for idtt in ['psychiatric_or_mental_illness']:  #d.IDENTITY_COLUMNS:
+        for idtt in d.IDENTITY_COLUMNS:
+        #for idtt in ['male', 'female', 'homosexual_gay_or_lesbian', 'christian', 'jewish','muslim', 'black', 'white', 'psychiatric_or_mental_illness'][6:]:
             kernel.run_identity_model(idtt, kernel.train_X_identity, kernel.train_y_identity, params={
                 'prefix': prefix,
                 'starter_lr': STARTER_LEARNING_RATE,
@@ -1375,9 +1465,10 @@ def main(argv):
                 'validation_split': 0.05,
                 'no_check_point': False,  # save check point or not
                 'verbose': 2,
-                'continue_train': True
+                'continue_train': False  # just predict, do not train this time
             })
 
+        set_trace()
         return
 
     if TARGET_RUN == 'res':
@@ -1391,14 +1482,20 @@ def main(argv):
     elif TARGET_RUN == 'lstm':
         predict_only = PRD_ONLY
 
-
         if ANA_RESULT:
-            preds = pickle.load(open('predicts', 'rb'))
+            #preds = pickle.load(open('predicts', 'rb'))
+            #sample_weight = kernel.prepare_weight_for_subgroup_balance()
+            pass
         else:
+            sample_weights = kernel.prepare_weight_for_subgroup_balance()
+            set_trace()
+            sample_weights = sample_weights[kernel.train_mask]
             preds = kernel.run_lstm_model(predict_ones_with_identity=True, params={
                 'prefix': prefix,
                 're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
-                'predict-only': predict_only
+                'predict-only': predict_only,
+                'starter_lr': STARTER_LEARNING_RATE,
+                'sample_weights': sample_weights
             })
 
             if NO_AUX:
@@ -1409,10 +1506,10 @@ def main(argv):
         # else:
         #    preds = pickle.load(open('predicts', 'rb'))
         kernel.calculate_metrics_and_print(preds)
+        set_trace()
         pd.options.display.float_format = '{:,.2f}'.format
         pd.options.display.max_colwidth = 140
         # df[df.white & (df.target_orig<0.5) & (df.lstm > 0.5)][['comment_text','lstm','target_orig']].head()
-        set_trace()
         #kernel.evaluate_model_and_print(preds, 0.55)
 
         # todo later we could split train/test, to see overfit thing, preds here are all ones with identity, need to
@@ -1441,15 +1538,17 @@ if os.path.isfile('.ana_result'):
     PRD_ONLY = False
     RESTART_TRAIN_RES = False
 
+id_preds = {}
+
 if __name__ == '__main__':
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)
     logger.info(
-        f'Start run with lr {STARTER_LEARNING_RATE}, decay {LEARNING_RATE_DECAY_PER_EPOCH}, gamma {FOCAL_LOSS_GAMMA}, \
+        f'Start run with FL_{FOCAL_LOSS}_{FOCAL_LOSS_GAMMA}_{ALPHA} lr {STARTER_LEARNING_RATE}, decay {LEARNING_RATE_DECAY_PER_EPOCH}, \
 BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, \
-EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN} ALPHA{ALPHA}')
+EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN}')
     main([1])
     # tf.compat.v1.app.run(main)
     logger.info(
-        f'Start run with lr {STARTER_LEARNING_RATE}, decay {LEARNING_RATE_DECAY_PER_EPOCH}, gamma {FOCAL_LOSS_GAMMA}, \
+        f'Start run with FL_{FOCAL_LOSS}_{FOCAL_LOSS_GAMMA}_{ALPHA} lr {STARTER_LEARNING_RATE}, decay {LEARNING_RATE_DECAY_PER_EPOCH}, \
 BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, \
-EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN} ALPHA{ALPHA}')
+EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN}')
