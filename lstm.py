@@ -584,8 +584,8 @@ class KaggleKernel:
 
         hidden = concatenate([
             AttentionRaffel(d.MAX_LEN, name="attention_after_lstm")(x),
-            #GlobalMaxPooling1D()(x),
-            GlobalAveragePooling1D()(x),
+            GlobalMaxPooling1D()(x),     # with this 0.9125 ...(not enough test...)
+            #GlobalAveragePooling1D()(x),  # a little worse to use this, 0.9124
         ])
 
         activate_type = hidden_act
@@ -694,14 +694,14 @@ class KaggleKernel:
                 if NO_AUX:
                     if FOCAL_LOSS:
                         model = self.build_lstm_model_customed(0, with_aux=False,
-                                                               loss=binary_crossentropy_with_focal,
-                                                               metrics=[#tf.keras.metrics.Precision(), tf.keras.metrics.Recall(), tf.keras.metrics.SpecificityAtSensitivity(0.50),
-                                                                      binary_crossentropy, #tf.keras.metrics.Mean(),
-                                                                        mean_absolute_error,])
-                                                                      #tf.keras.metrics.SensitivityAtSpecificity(0.9, name='sn_90'),
-                                                                      #tf.keras.metrics.SensitivityAtSpecificity(0.95, name='sn_95'),
-                                                                      #tf.keras.metrics.SpecificityAtSensitivity(0.90, name="sp_90"),
-                                                                      #tf.keras.metrics.SpecificityAtSensitivity(0.95, name="sp_95"),
+                                   loss=binary_crossentropy_with_focal,
+                                   metrics=[tf.keras.metrics.Precision(), tf.keras.metrics.Recall(),
+                                           binary_crossentropy, #tf.keras.metrics.Mean(),tf.keras.metrics.SpecificityAtSensitivity(0.50),
+                                           mean_absolute_error,
+                                           tf.keras.metrics.SensitivityAtSpecificity(0.9, name='sn_90'),
+                                           tf.keras.metrics.SensitivityAtSpecificity(0.95, name='sn_95'),
+                                           tf.keras.metrics.SpecificityAtSensitivity(0.90, name="sp_90"),
+                                           tf.keras.metrics.SpecificityAtSensitivity(0.95, name="sp_95"),])
 #                        KaggleKernel.bin_prd_clsf_info_neg,
 #                        KaggleKernel.bin_prd_clsf_info_pos])
                                                                            #tf.keras.metrics.SpecificityAtSensitivity(0.98), tf.keras.metrics.SpecificityAtSensitivity(0.99), tf.keras.metrics.SpecificityAtSensitivity(1.00)
@@ -1197,9 +1197,11 @@ RESTART_TRAIN_ID = False
 NO_AUX = True
 Y_TRAIN_BIN = False  # with True, slightly worse
 #tf.keras.metrics.SpecificityAtSensitivity(0.50), TRAIN_BIN need to be as we use this metrics, or we can customize
-FOCAL_LOSS = False
+FOCAL_LOSS = True
 FOCAL_LOSS_GAMMA = 2.
 ALPHA = 0.666
+#FOCAL_LOSS_GAMMA = 0.
+#ALPHA = 0.8
 #GAMMA works better 2. with BS 1024
 #GAMMA works better 1.5 with BS 512
 
@@ -1352,6 +1354,9 @@ def binary_crossentropy_with_focal(y_true, y_pred, gamma=FOCAL_LOSS_GAMMA, alpha
         bce = alpha * math_ops.multiply(1. - y_pred, math_ops.multiply(y_true, math_ops.log(y_pred + eps)))
         bce += (1 - alpha) * math_ops.multiply(y_pred,
                                                math_ops.multiply((1. - y_true), math_ops.log(1. - y_pred + eps)))
+    elif 0. - eps <= gamma <= 0. + eps:
+        bce = alpha * math_ops.multiply(y_true, math_ops.log(y_pred + eps))
+        bce += (1 - alpha) * math_ops.multiply((1. - y_true), math_ops.log(1. - y_pred + eps))
     else:
         gamma_tensor = tf.broadcast_to(tf.constant(gamma), tf.shape(input=y_pred))
         bce = alpha * math_ops.multiply(math_ops.pow(1. - y_pred, gamma_tensor),
@@ -1388,9 +1393,8 @@ def main(argv):
 
     if IDENTITY_RUN:
         # preds = np.where(preds >= 0.5, True, False) no need recording to API description, but why auc value can change?
-        #for idtt in ['psychiatric_or_mental_illness']:  #d.IDENTITY_COLUMNS:
-        for idtt in [ 'male', 'female', 'homosexual_gay_or_lesbian', 'christian', 'jewish',
-    'muslim', 'black', 'white', 'psychiatric_or_mental_illness'][6:]:
+        for idtt in d.IDENTITY_COLUMNS:
+        #for idtt in ['male', 'female', 'homosexual_gay_or_lesbian', 'christian', 'jewish','muslim', 'black', 'white', 'psychiatric_or_mental_illness'][6:]:
             kernel.run_identity_model(idtt, kernel.train_X_identity, kernel.train_y_identity, params={
                 'prefix': prefix,
                 'starter_lr': STARTER_LEARNING_RATE,
@@ -1435,9 +1439,10 @@ def main(argv):
                 preds = preds[0]
         # else:
         #    preds = pickle.load(open('predicts', 'rb'))
+        kernel.calculate_metrics_and_print(preds)
+        set_trace()
         pd.options.display.float_format = '{:,.2f}'.format
         pd.options.display.max_colwidth = 140
-        kernel.calculate_metrics_and_print(preds)
         # df[df.white & (df.target_orig<0.5) & (df.lstm > 0.5)][['comment_text','lstm','target_orig']].head()
         #kernel.evaluate_model_and_print(preds, 0.55)
 
@@ -1472,12 +1477,12 @@ id_preds = {}
 if __name__ == '__main__':
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)
     logger.info(
-        f'Start run with lr {STARTER_LEARNING_RATE}, decay {LEARNING_RATE_DECAY_PER_EPOCH}, gamma {FOCAL_LOSS_GAMMA}, \
+        f'Start run with FL_{FOCAL_LOSS}_{FOCAL_LOSS_GAMMA}_{ALPHA} lr {STARTER_LEARNING_RATE}, decay {LEARNING_RATE_DECAY_PER_EPOCH}, \
 BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, \
-EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN} ALPHA{ALPHA}')
+EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN}')
     main([1])
     # tf.compat.v1.app.run(main)
     logger.info(
-        f'Start run with lr {STARTER_LEARNING_RATE}, decay {LEARNING_RATE_DECAY_PER_EPOCH}, gamma {FOCAL_LOSS_GAMMA}, \
+        f'Start run with FL_{FOCAL_LOSS}_{FOCAL_LOSS_GAMMA}_{ALPHA} lr {STARTER_LEARNING_RATE}, decay {LEARNING_RATE_DECAY_PER_EPOCH}, \
 BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, \
-EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN} ALPHA{ALPHA}')
+EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN}')
