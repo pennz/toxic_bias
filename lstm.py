@@ -36,7 +36,7 @@ LSTM_UNITS = 128
 DENSE_HIDDEN_UNITS = 4 * LSTM_UNITS
 RES_DENSE_HIDDEN_UNITS = 5
 
-EPOCHS = 8  # 4 seems good for current setting, more training will help for the final score
+EPOCHS = 4  # 4 seems good for current setting, more training will help for the final score?
 
 
 from tensorflow.keras import initializers, regularizers, constraints
@@ -686,7 +686,7 @@ class KaggleKernel:
                 h5_file = prefix + '_attention_lstm_' + f'{fold}.hdf5'  # we could load with file name, then remove and save to new one
 
             ckpt = ModelCheckpoint(h5_file, save_best_only=True, verbose=1)
-            early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=2)
+            early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=1)
 
             starter_lr = params.get('starter_lr', STARTER_LEARNING_RATE)
             # model thing
@@ -774,8 +774,7 @@ class KaggleKernel:
                               verbose=1
                           ),
                           early_stop,
-                          #ckpt,
-                          # tf_fit_batch_logger,
+                          ckpt,
                           prog_bar_logger
                       ])
 
@@ -1006,6 +1005,16 @@ class KaggleKernel:
         And we know the identies now, so we balance all the ones,
         for every subgroup, we calculate the related weight to balance
         '''
+        def get_target_distribution_overall():
+            pass
+
+        def get_target_distribution_subgroup():
+            pass
+
+        def add_weight():  # need a parameter for all pos v.s. neg., and for different
+            # target value, how do we balance? (First we equalize them, then rebalance)
+            pass
+
         pass
 
     def res_subgroup(self, subgroup, y_pred):
@@ -1420,7 +1429,6 @@ def main(argv):
 
     elif TARGET_RUN == 'lstm':
         predict_only = PRD_ONLY
-
 
         if ANA_RESULT:
             preds = pickle.load(open('predicts', 'rb'))

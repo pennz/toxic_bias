@@ -64,6 +64,7 @@ so steps:
 2. run identity networks (check if it is usable)(to use as the data to reduce the bias)
 3. add other features, if we decrease the identity affects to the final prediction
 4. use other hand picked features, like length / complexity of grammar (feature engineering)
+**length** **word count** might be useful feature (also length/words)
 
 ## what other people do 
 debiased word embedding
