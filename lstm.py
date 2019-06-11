@@ -36,8 +36,7 @@ LSTM_UNITS = 128
 DENSE_HIDDEN_UNITS = 4 * LSTM_UNITS
 RES_DENSE_HIDDEN_UNITS = 5
 
-EPOCHS = 4  # 4 seems good for current setting, more training will help for the final score?
-
+EPOCHS = 8  # 4 seems good for current setting, more training will help for the final score?
 
 from tensorflow.keras import initializers, regularizers, constraints
 
@@ -331,6 +330,8 @@ class KaggleKernel:
                 self.load_identity_data_idx()
                 mask = np.ones(len(self.train_X), np.bool)
                 mask[self.identity_idx] = 0  # reverse indexing
+
+                self.train_mask = mask
 
                 self.train_X = self.train_X[mask]
                 self.train_y = self.train_y[mask]
@@ -669,6 +670,7 @@ class KaggleKernel:
         prefix = params['prefix']
         re_train = params['re-start-train']
         predict_only = params['predict-only']
+        sample_weights = params.get('sample_weights')
 
         prefix += 'G{:.1f}'.format(FOCAL_LOSS_GAMMA)
 
@@ -756,12 +758,15 @@ class KaggleKernel:
                 break  # do not fit
             prog_bar_logger = NBatchProgBarLogger(display_per_batches=int(1300000 / 30 / BATCH_SIZE), early_stop=True,
                                       patience_displays=3)
+            if sample_weights is not None:
+                logger.debug(f"fitting with sample_weight {sample_weights[:10]}...")
             model.fit(self.train_X,
                       # self.train_y[tr_ind]>0.5,
                       self.train_y,
                       validation_split=0.05,
                       batch_size=BATCH_SIZE,
                       epochs=EPOCHS,
+                      sample_weight=sample_weights,
                       # steps_per_epoch=int(len(self.train_X)*0.95/BATCH_SIZE),
                       verbose=0,
                       # validation_data=(self.train_X[val_ind], self.train_y[val_ind]>0.5),
@@ -992,30 +997,73 @@ class KaggleKernel:
 
         return [df.index.get_loc(label) for label in index] # selected the items
 
+    def _get_identities(self):
+        prefix = self.emb.BIN_FOLDER
+        #if os.path.isfile(prefix+'train_df.pd'):
+        if False:
+            self.train_df = pickle.load(open(prefix+'train_df.pd', 'rb'))
+        else:
+            for g in d.IDENTITY_COLUMNS:
+                pred = pickle.load(open(f'{prefix}_{g}_pred.pkl', 'rb'))
+                self.train_df[f'{g}_pred'] = pred
+
+        for g in d.IDENTITY_COLUMNS:
+            self.train_df.loc[self.identity_idx,f'{g}_pred'] = self.train_df.loc[self.identity_idx, g]
+
     def prepare_weight_for_subgroup_balance(self):
         ''' to see how other people handle weights [this kernel](https://www.kaggle.com/thousandvoices/simple-lstm)
             sample_weights = np.ones(len(x_train), dtype=np.float32)
             # more weights for the ones with identities, more identities, more weights
             sample_weights += train_df[IDENTITY_COLUMNS].sum(axis=1)
-            # the toxic ones, reverse identity
+            # the toxic ones, reverse identity (without identity)(average 4~8), so more weights on toxic one without identity
             sample_weights += train_df[TARGET_COLUMN] * (~train_df[IDENTITY_COLUMNS]).sum(axis=1)
             # none toxic, non-toxic, with identity, more weight for this, so the weights are more or less balanced
             sample_weights += (~train_df[TARGET_COLUMN]) * train_df[IDENTITY_COLUMNS].sum(axis=1) * 5
             sample_weights /= sample_weights.mean()
+
         And we know the identies now, so we balance all the ones,
         for every subgroup, we calculate the related weight to balance
         '''
-        def get_target_distribution_overall():
-            pass
+        self.train_df = self.emb.train_df
+        self._get_identities()  # for known ones, just skip
+        analyzer = d.TargetDistAnalyzer(self.train_df)
+        o = analyzer.get_distribution_overall()
+        gs = analyzer.get_distribution_subgroups()  # for subgroup, use 0.5 as the limit, continuous info not used... anyway, we try first
 
-        def get_target_distribution_subgroup():
-            pass
+        balance_scheme = 'target_bucket_same' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
 
-        def add_weight():  # need a parameter for all pos v.s. neg., and for different
-            # target value, how do we balance? (First we equalize them, then rebalance)
-            pass
+        def add_weight(balance_scheme, balance_group=False):  # need a parameter for all pos v.s. neg., and for different
+            # target value, how do we balance?
+            # (First we equalize them, then re-balance), just try different balance
+            ones_weights = np.ones(len(self.train_df), dtype=np.float32)
+            #sample_weights = ones_weights.copy()
 
-        pass
+            gs_weights_ratio = {}
+            gs_weights = {}
+            target_ratios = np.array([dstr[2] for dstr in o])
+            if balance_scheme == 'target_bucket_same':
+                # compare with the background one, then change the weights to the same scale
+                for g,v in gs.items():
+                    gs_weights[g] = ones_weights.copy() # initial, ones
+                    # v is the distribution for ONE subgroup for 0~1 11 target types
+                    gs_weights_ratio[g] = np.divide(target_ratios, np.array([dstr[2] for dstr in v]))
+                    for target_split_idx, ratio in enumerate(gs_weights_ratio[g]):
+                        split_idx_in_df = v[target_split_idx][3]  # [3] is the index
+                        gs_weights[g][split_idx_in_df] *= ratio
+
+            weights_changer = np.transpose([v for v in gs_weights.values()])
+            weights_changer_max = np.amax(weights_changer, axis=1)
+            weights_changer_min = np.amin(weights_changer, axis=1)
+            weights_changer_mean = np.mean(weights_changer, axis=1)
+            weights_changer_merged = ones_weights.copy()
+            weights_changer_merged[weights_changer_mean>1] = weights_changer_max[weights_changer_mean>1]
+            weights_changer_merged[weights_changer_mean<1] = weights_changer_min[weights_changer_mean<1]
+
+            sample_weights = weights_changer_merged/weights_changer_merged.mean()  # normalize
+
+            return sample_weights
+
+        return add_weight(balance_scheme)
 
     def res_subgroup(self, subgroup, y_pred):
         # first prepare the data
@@ -1205,12 +1253,16 @@ RESTART_TRAIN_ID = False
 
 NO_AUX = True
 Y_TRAIN_BIN = False  # with True, slightly worse
-#tf.keras.metrics.SpecificityAtSensitivity(0.50), TRAIN_BIN need to be as we use this metrics, or we can customize
-FOCAL_LOSS = True
-FOCAL_LOSS_GAMMA = 2.
-ALPHA = 0.666
+
+FOCAL_LOSS = False
+
+FOCAL_LOSS_GAMMA = 0.
+ALPHA = 0.5
+
+#FOCAL_LOSS_GAMMA = 2.
+#ALPHA = 0.666
 #FOCAL_LOSS_GAMMA = 0.
-#ALPHA = 0.8
+#ALPHA = 0.7(0.9121)  # 0.9(0.9122), 0.8(0.9123...) (no difference with no focal loss)
 #GAMMA works better 2. with BS 1024
 #GAMMA works better 1.5 with BS 512
 
@@ -1389,8 +1441,8 @@ def main(argv):
     else:
         if EXCLUDE_IDENTITY_IN_TRAIN and not IDENTITY_RUN:  # for identity, need to predict for all train data
             action = TRAIN_DATA_EXCLUDE_IDENDITY_ONES
-    if not (RESTART_TRAIN or RESTART_TRAIN_ID or RESTART_TRAIN_RES):
-        action = DATA_ACTION_NO_NEED_LOAD_EMB_M  # loading model from h5 file, no need load emb matrix (save memory)
+    #if not (RESTART_TRAIN or RESTART_TRAIN_ID or RESTART_TRAIN_RES):
+    #    action = DATA_ACTION_NO_NEED_LOAD_EMB_M  # loading model from h5 file, no need load emb matrix (save memory)
     kernel = KaggleKernel(action=action)
     logger.debug(action)
     kernel.load_identity_data_idx()  # so only predict part of the data
@@ -1431,13 +1483,19 @@ def main(argv):
         predict_only = PRD_ONLY
 
         if ANA_RESULT:
-            preds = pickle.load(open('predicts', 'rb'))
+            #preds = pickle.load(open('predicts', 'rb'))
+            #sample_weight = kernel.prepare_weight_for_subgroup_balance()
+            pass
         else:
+            sample_weights = kernel.prepare_weight_for_subgroup_balance()
+            set_trace()
+            sample_weights = sample_weights[kernel.train_mask]
             preds = kernel.run_lstm_model(predict_ones_with_identity=True, params={
                 'prefix': prefix,
                 're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
                 'predict-only': predict_only,
-                'starter_lr': STARTER_LEARNING_RATE
+                'starter_lr': STARTER_LEARNING_RATE,
+                'sample_weights': sample_weights
             })
 
             if NO_AUX:

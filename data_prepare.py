@@ -9,6 +9,9 @@ from tensorflow.keras.preprocessing import text, sequence
 MAX_LEN = 180  # used in lstm definition ....
 
 import lstm
+import sklearn
+
+from IPython.core.debugger import set_trace
 
 # from tqdm import tqdm
 # tqdm.pandas()
@@ -175,6 +178,40 @@ BNSP_AUC = 'bnsp_auc'  # stands for background negative, subgroup positive
 OVERALL_AUC = 'overall_auc'
 
 from sklearn import metrics
+
+class TargetDistAnalyzer:
+    def __init__(self, target):
+        self.df = target  # df with target, with identity information, then we can sort it out
+        self.descretizer = sklearn.preprocessing.KBinsDiscretizer(10+1, encode='ordinal', strategy='uniform')
+        self.descretizer.fit(target[TARGET_COLUMN].values.reshape(-1, 1))
+
+    def get_distribution(self, target_data):
+        """
+        target_data: pandas series, need to get index, so need series
+
+        :return: (type, cnt number, frequency, index) pair list for this distribution
+        """
+        dst = []
+
+        y_t = self.descretizer.transform(target_data.values.reshape(-1,1))
+        uniq_elements, element_counts = np.unique(y_t, return_counts=True)
+        all_counts = len(y_t)
+        for i, e in enumerate(uniq_elements):
+            dst.append((e, element_counts[i], element_counts[i]/all_counts, target_data.loc[(y_t == e).ravel()].index))
+
+        return dst
+
+    def get_distribution_overall(self):
+        return self.get_distribution(self.df[TARGET_COLUMN])
+
+    def get_distribution_subgroups(self):
+        dstr = {}
+
+        for g in IDENTITY_COLUMNS:
+            dstr[g] = self.get_distribution(self.df[self.df[g].fillna(0.)>0.5][TARGET_COLUMN])
+        return dstr
+
+
 
 class BiasBenchmark:
     def __init__(self, train_df_id_na_dropped, threshold=0.5):
