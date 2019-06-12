@@ -143,8 +143,8 @@ def download_lstm_from_gdrive():
         ./gdrive download 1glTXC4_DCE3DGJaGT721CcPAkE9RTkOi --path {GDRIVE_DOWNLOAD_DEST} # train
         ./gdrive download 1mMwuBOLNqa_gaY2O7v3jpOk-DFgna-1E --path {GDRIVE_DOWNLOAD_DEST} # test
         ./gdrive download 1WAyOTiG3rvsrp1MDeacwikoXTH7XqEtQ --path {GDRIVE_DOWNLOAD_DEST} # embedding
-        ./gdrive download 1d_2uUzStUhuzErWAcIIk2TuzA1bFyKN7 --path {GDRIVE_DOWNLOAD_DEST} # predicts (no res)
-        ./gdrive download 1VFYcLECsE2BAYoe_q2o4a7aMT3OTp5S6 --path {GDRIVE_DOWNLOAD_DEST} # model
+        #./gdrive download 1d_2uUzStUhuzErWAcIIk2TuzA1bFyKN7 --path {GDRIVE_DOWNLOAD_DEST} # predicts (no res)
+        #./gdrive download 1VFYcLECsE2BAYoe_q2o4a7aMT3OTp5S6 --path {GDRIVE_DOWNLOAD_DEST} # model
         #./gdrive download   # predicts result (for target)
         #./gdrive download   # identity model
         #mv lstm_data/* . 

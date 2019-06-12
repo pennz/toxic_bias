@@ -302,13 +302,17 @@ class KaggleKernel:
         self.model = None
         self.emb = None
         self.train_X = None
+        self.train_X_all = None
+        self.train_y_all = None
         self.train_y = None
         self.train_y_aux = None
+        self.train_y_aux_all = None
         self.train_y_identity = None
         self.train_X_identity = None
         self.to_predict_X = None
         self.embedding_matrix = None
         self.identity_idx = None
+        self.id_used_in_train = False
         self.id_validate_df = None
 
         self.judge = None  # for auc metrics
@@ -320,7 +324,7 @@ class KaggleKernel:
         if self.emb is None:
             self.emb = d.EmbeddingHandler()
 
-        self.train_X, self.train_y, self.train_y_aux, self.to_predict_X, self.embedding_matrix = self.emb.data_prepare(
+        self.train_X_all, self.train_y_all, self.train_y_aux_all, self.to_predict_X_all, self.embedding_matrix = self.emb.data_prepare(
             action)
         if Y_TRAIN_BIN:
             self.train_y_float_backup = self.train_y
@@ -328,14 +332,14 @@ class KaggleKernel:
         if action is not None:
             if action == TRAIN_DATA_EXCLUDE_IDENDITY_ONES:
                 self.load_identity_data_idx()
-                mask = np.ones(len(self.train_X), np.bool)
+                mask = np.ones(len(self.train_X_all), np.bool)
                 mask[self.identity_idx] = 0  # reverse indexing
 
                 self.train_mask = mask
 
-                self.train_X = self.train_X[mask]
-                self.train_y = self.train_y[mask]
-                self.train_y_aux = self.train_y_aux[mask]
+                self.train_X = self.train_X_all[mask]
+                self.train_y = self.train_y_all[mask]
+                self.train_y_aux = self.train_y_aux_all[mask]
                 logger.debug("Train data no identity ones now")
 
         try:
@@ -532,9 +536,12 @@ class KaggleKernel:
         prefix = params['prefix']
         file_name = f'{prefix}_{subgroup}_0.hdf5'
         params['check_point_path'] = file_name
-        target_subgroup = labels[:, d.IDENTITY_COLUMNS.index(subgroup)]
+        pred_only = params.get('predict_only', False)
+        if not pred_only:
+            target_subgroup = labels[:, d.IDENTITY_COLUMNS.index(subgroup)]
 
         if RESTART_TRAIN_ID or not os.path.isfile(file_name):
+            if pred_only: raise RuntimeError("Need to have a trained model to predict")
             model = self.build_identity_model(1)  # one model per identity...
             self.run_model_train(model, features, target_subgroup, params)
         else:
@@ -551,16 +558,20 @@ class KaggleKernel:
                 logger.debug(f'continue train with learning rate /16')
                 self.run_model_train(model, features, target_subgroup, params)
 
-        identity_predict = self.run_model(model, 'predict', self.train_X)
-        identity_predict_for_metric = identity_predict[self.identity_idx]
+        if not pred_only:
+            identity_predict = self.run_model(model, 'predict', self.train_X)
+            identity_predict_for_metric = identity_predict[self.identity_idx]
 
-        s = binary_sensitivity_np(identity_predict_for_metric.reshape(-1), target_subgroup)
-        logger.info(f'for {subgroup}, predict_sensitivity is {s}')
+            s = binary_sensitivity_np(identity_predict_for_metric.reshape(-1), target_subgroup)
+            logger.info(f'for {subgroup}, predict_sensitivity is {s}')
 
-        predict_file_name = f'{prefix}_{subgroup}_pred.pkl'
-        global  id_preds
-        id_preds[subgroup] = identity_predict
-        pickle.dump(identity_predict, open(predict_file_name, 'wb'))
+            predict_file_name = f'{prefix}_{subgroup}_pred.pkl'
+            global  id_preds
+            id_preds[subgroup] = identity_predict
+            pickle.dump(identity_predict, open(predict_file_name, 'wb'))
+        else:  # only predict for test
+            predict = self.run_model(model, 'predict', features)
+            logger.debug(f'in test set, predicted {subgroup}: mean {predict.mean()}, cnt {(predict>=0.5).sum()}, all_cnt {len(predict)}')
             # self._val_index = val_ind  # for debug
             # pred = model.predict(self.train_X[val_ind], verbose=2)
             # self.oof_preds[val_ind] += pred
@@ -671,6 +682,17 @@ class KaggleKernel:
         re_train = params['re-start-train']
         predict_only = params['predict-only']
         sample_weights = params.get('sample_weights')
+        train_data = params.get('train_data', None)
+        if train_data is None:
+            train_X = self.train_X
+            train_y = self.train_y
+        else:
+            train_X, train_y = train_data
+        val_data = params.get('val_data')
+        if val_data is None:
+            train_X_identity = self.train_X_identity
+        else:
+            train_X_identity,_ = val_data
 
         prefix += 'G{:.1f}'.format(FOCAL_LOSS_GAMMA)
 
@@ -688,7 +710,7 @@ class KaggleKernel:
                 h5_file = prefix + '_attention_lstm_' + f'{fold}.hdf5'  # we could load with file name, then remove and save to new one
 
             ckpt = ModelCheckpoint(h5_file, save_best_only=True, verbose=1)
-            early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=1)
+            early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=1, restore_best_weights=True)
 
             starter_lr = params.get('starter_lr', STARTER_LEARNING_RATE)
             # model thing
@@ -756,13 +778,13 @@ class KaggleKernel:
             #              tf_fit_batch_logger])
             if predict_only:
                 break  # do not fit
-            prog_bar_logger = NBatchProgBarLogger(display_per_batches=int(1300000 / 30 / BATCH_SIZE), early_stop=True,
+            prog_bar_logger = NBatchProgBarLogger(display_per_batches=int(1600000 / 20 / BATCH_SIZE), early_stop=True,
                                       patience_displays=3)
             if sample_weights is not None:
                 logger.debug(f"fitting with sample_weight {sample_weights[:10]}...")
-            model.fit(self.train_X,
+            model.fit(train_X,
                       # self.train_y[tr_ind]>0.5,
-                      self.train_y,
+                      train_y,
                       validation_split=0.05,
                       batch_size=BATCH_SIZE,
                       epochs=EPOCHS,
@@ -787,15 +809,11 @@ class KaggleKernel:
             if train_test_split:
                 break
 
-            # schedule: a function that takes an epoch index as input(integer, indexed from 0) and current learning rate and returns a new learning rate as output(float).
-            # verbose: int. 0: quiet, 1: update messages.
-
-            # self._val_index = val_ind  # for debug
-            pred = model.predict(self.train_X[val_ind], verbose=1, batch_size=BATCH_SIZE)
-            self.oof_preds[val_ind] += np.concatenate((pred[0], pred[1]), axis=1)  # target and aux
+            #pred = model.predict(self.train_X[val_ind], verbose=1, batch_size=BATCH_SIZE)
+            #self.oof_preds[val_ind] += np.concatenate((pred[0], pred[1]), axis=1)  # target and aux
 
         if predict_ones_with_identity:
-            return model.predict(self.train_X_identity, verbose=2, batch_size=BATCH_SIZE)
+            return model.predict(train_X_identity, verbose=2, batch_size=BATCH_SIZE)
 
             # test_preds += (np.array(model.predict(self.to_predict_X, verbose=1)[0])).ravel()
         # test_preds /= 5
@@ -998,6 +1016,11 @@ class KaggleKernel:
         return [df.index.get_loc(label) for label in index] # selected the items
 
     def _get_identities(self):
+        """
+        No need to use this function, all identities are marked
+
+        :return:
+        """
         prefix = self.emb.BIN_FOLDER
         #if os.path.isfile(prefix+'train_df.pd'):
         if False:
@@ -1009,6 +1032,21 @@ class KaggleKernel:
 
         for g in d.IDENTITY_COLUMNS:
             self.train_df.loc[self.identity_idx,f'{g}_pred'] = self.train_df.loc[self.identity_idx, g]
+
+    def get_identities_for_training(self):
+        if not self.id_used_in_train:
+            logger.debug("Use 80% identity data")  # in test set, around 10% data will be with identities (lower than training set)
+            id_df = self.train_df.loc[self.identity_idx]
+            id_train_df = id_df.sample(frac=0.8)
+            id_train_df_idx = id_train_df.index
+
+            self.train_mask[id_train_df_idx] = 1
+
+            self.id_used_in_train = True
+
+            for g in d.IDENTITY_COLUMNS:
+                self.train_df[g+'_in_train'] = 0.
+                self.train_df[g+'_in_train'].loc[id_train_df_idx] = self.train_df[g].loc[id_train_df_idx]  # only the ones larger than 0.5 will ? how about negative example?
 
     def prepare_weight_for_subgroup_balance(self):
         ''' to see how other people handle weights [this kernel](https://www.kaggle.com/thousandvoices/simple-lstm)
@@ -1025,14 +1063,16 @@ class KaggleKernel:
         for every subgroup, we calculate the related weight to balance
         '''
         self.train_df = self.emb.train_df
-        self._get_identities()  # for known ones, just skip
+        # self._get_identities()  # for known ones, just skip
         analyzer = d.TargetDistAnalyzer(self.train_df)
         o = analyzer.get_distribution_overall()
+        self.get_identities_for_training()
         gs = analyzer.get_distribution_subgroups()  # for subgroup, use 0.5 as the limit, continuous info not used... anyway, we try first
 
-        balance_scheme = 'target_bucket_same' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
+        balance_scheme_subgroups = 'target_bucket_same_for_subgroups' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
+        balance_scheme_target_splits = 'no_target_bucket_same_for_target_splits' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
 
-        def add_weight(balance_scheme, balance_group=False):  # need a parameter for all pos v.s. neg., and for different
+        def add_weight(balance_scheme_subgroups, balance_group=False):  # need a parameter for all pos v.s. neg., and for different
             # target value, how do we balance?
             # (First we equalize them, then re-balance), just try different balance
             ones_weights = np.ones(len(self.train_df), dtype=np.float32)
@@ -1040,13 +1080,14 @@ class KaggleKernel:
 
             gs_weights_ratio = {}
             gs_weights = {}
-            target_ratios = np.array([dstr[2] for dstr in o])
-            if balance_scheme == 'target_bucket_same':
+            background_target_ratios = np.array([dstr[2] for dstr in o])
+
+            if balance_scheme_subgroups == 'target_bucket_same_for_subgroups':
                 # compare with the background one, then change the weights to the same scale
                 for g,v in gs.items():
                     gs_weights[g] = ones_weights.copy() # initial, ones
                     # v is the distribution for ONE subgroup for 0~1 11 target types
-                    gs_weights_ratio[g] = np.divide(target_ratios, np.array([dstr[2] for dstr in v]))
+                    gs_weights_ratio[g] = np.divide(background_target_ratios, np.array([dstr[2] for dstr in v]))
                     for target_split_idx, ratio in enumerate(gs_weights_ratio[g]):
                         split_idx_in_df = v[target_split_idx][3]  # [3] is the index
                         gs_weights[g][split_idx_in_df] *= ratio
@@ -1059,11 +1100,17 @@ class KaggleKernel:
             weights_changer_merged[weights_changer_mean>1] = weights_changer_max[weights_changer_mean>1]
             weights_changer_merged[weights_changer_mean<1] = weights_changer_min[weights_changer_mean<1]
 
-            sample_weights = weights_changer_merged/weights_changer_merged.mean()  # normalize
+            sample_weights = weights_changer_merged
 
+            if balance_scheme_target_splits == 'target_bucket_same_for_target_splits':
+                for target_split_idx, ratio in enumerate(background_target_ratios):
+                    idx_for_split = o[target_split_idx][3]
+                    sample_weights[idx_for_split] *= 1/len(background_target_ratios) / ratio  # 1/len(b_t_r) is what we want
+
+            sample_weights /= sample_weights.mean()  # normalize
             return sample_weights
 
-        return add_weight(balance_scheme)
+        return add_weight(balance_scheme_subgroups)
 
     def res_subgroup(self, subgroup, y_pred):
         # first prepare the data
@@ -1157,17 +1204,23 @@ class KaggleKernel:
         if self.identity_idx is None:
             self.train_X_identity, self.train_y_identity, self.identity_idx = self.emb.get_identity_train_data_df_idx()  # to train the identity
 
-    def calculate_metrics_and_print(self, preds=None, threshold=0.5, validate_df_with_preds=None, model_name='lstm', detail=True):
+    def calculate_metrics_and_print(self, preds=None, threshold=0.5, validate_df_with_preds=None, model_name='lstm', detail=True, benchmark_base=None):
         self.emb.read_csv(train_only=True)
         self.load_identity_data_idx()
+        if benchmark_base is None:
+            benchmark_base = self.train_df.loc[self.identity_idx]
 
         #if self.judge is None:  # no .... different threshold need to recalculate in the new judge
-        self.judge = d.BiasBenchmark(kernel.emb.train_df.iloc[self.identity_idx],threshold=threshold)  # the idx happen to be the iloc value
+        self.judge = d.BiasBenchmark(benchmark_base, threshold=threshold)  # the idx happen to be the iloc value
         self.id_validate_df = self.judge.validate_df
 
         if model_name == d.MODEL_NAME:
-            logger.debug(f'{model_name} result for {len(preds)} items:')
-            value, bias_metrics, subgroup_distribution, overall_distribution = self.judge.calculate_benchmark(preds)
+            if preds is not None: logger.debug(f'{model_name} result for {len(preds)} items:')
+            if validate_df_with_preds is not None: logger.debug(f'{model_name} result for {len(validate_df_with_preds)} items:')
+            if validate_df_with_preds is not None:
+                value, bias_metrics, subgroup_distribution, overall_distribution = self.judge.calculate_benchmark(validate_df=validate_df_with_preds, model_name=model_name)
+            else:
+                value, bias_metrics, subgroup_distribution, overall_distribution = self.judge.calculate_benchmark(preds)
         elif model_name.startswith('res'):
             logger.debug(f'{model_name} result for {len(validate_df_with_preds)} items in background')
             value, bias_metrics, subgroup_distribution, overall_distribution = self.judge.calculate_benchmark(validate_df=validate_df_with_preds, model_name=model_name)
@@ -1180,7 +1233,7 @@ class KaggleKernel:
         # bias_metrics_df = pickle.load(open("bias_metrics", 'rb'))  # only the ones with identity is predicted
         # subgroup_distribution = pickle.load(open("subgroup_dist", 'rb'))  # only the ones with identity is predicted
 
-        logger.info(f'final metric: {value} for threshold {threshold} applied to \'{d.TARGET_COLUMN}\' column')
+        logger.info(f'final metric: {value} for threshold {threshold} applied to \'{d.TARGET_COLUMN}\' column, ')
         logger.info("\n{}".format(bias_metrics[['subgroup', 'subgroup_auc', 'bnsp_auc', 'bpsn_auc']]))
         # logger.info(subgroup_distribution)
         if not detail:
@@ -1241,7 +1294,7 @@ X,y,idx_train_background, idx_val_background = None, None,None,None
 y_res_pred = None
 
 # lambda e: 5e-3 * (0.5 ** e),
-STARTER_LEARNING_RATE = 5e-3 # as the BCE we adopted...
+STARTER_LEARNING_RATE = 2e-3 # as the BCE we adopted...
 LEARNING_RATE_DECAY_PER_EPOCH = 0.5
 
 IDENTITY_RUN = False
@@ -1254,10 +1307,10 @@ RESTART_TRAIN_ID = False
 NO_AUX = True
 Y_TRAIN_BIN = False  # with True, slightly worse
 
-FOCAL_LOSS = False
+FOCAL_LOSS = True
 
 FOCAL_LOSS_GAMMA = 0.
-ALPHA = 0.5
+ALPHA = 0.8
 
 #FOCAL_LOSS_GAMMA = 2.
 #ALPHA = 0.666
@@ -1456,17 +1509,31 @@ def main(argv):
         # preds = np.where(preds >= 0.5, True, False) no need recording to API description, but why auc value can change?
         for idtt in d.IDENTITY_COLUMNS:
         #for idtt in ['male', 'female', 'homosexual_gay_or_lesbian', 'christian', 'jewish','muslim', 'black', 'white', 'psychiatric_or_mental_illness'][6:]:
-            kernel.run_identity_model(idtt, kernel.train_X_identity, kernel.train_y_identity, params={
-                'prefix': prefix,
-                'starter_lr': STARTER_LEARNING_RATE,
-                'epochs': 8,
-                'patience': 2,
-                'lr_decay': 0.5,
-                'validation_split': 0.05,
-                'no_check_point': False,  # save check point or not
-                'verbose': 2,
-                'continue_train': False  # just predict, do not train this time
-            })
+            if PRD_ONLY:
+                kernel.run_identity_model(idtt, kernel.to_predict_X, None, params={
+                    'prefix': prefix,
+                    'starter_lr': STARTER_LEARNING_RATE,
+                    'epochs': 8,
+                    'patience': 2,
+                    'lr_decay': 0.5,
+                    'validation_split': 0.05,
+                    'no_check_point': False,  # save check point or not
+                    'verbose': 2,
+                    'continue_train': False,  # just predict, do not train this time
+                    'predict_only': True
+                })
+            else:
+                kernel.run_identity_model(idtt, kernel.train_X_identity, kernel.train_y_identity, params={
+                    'prefix': prefix,
+                    'starter_lr': STARTER_LEARNING_RATE,
+                    'epochs': 8,
+                    'patience': 2,
+                    'lr_decay': 0.5,
+                    'validation_split': 0.05,
+                    'no_check_point': False,  # save check point or not
+                    'verbose': 2,
+                    'continue_train': False,  # just predict, do not train this time
+                })
 
         set_trace()
         return
@@ -1482,31 +1549,56 @@ def main(argv):
     elif TARGET_RUN == 'lstm':
         predict_only = PRD_ONLY
 
+        kernel.train_df = kernel.emb.train_df
+
         if ANA_RESULT:
             #preds = pickle.load(open('predicts', 'rb'))
             #sample_weight = kernel.prepare_weight_for_subgroup_balance()
             pass
         else:
-            sample_weights = kernel.prepare_weight_for_subgroup_balance()
-            set_trace()
-            sample_weights = sample_weights[kernel.train_mask]
-            preds = kernel.run_lstm_model(predict_ones_with_identity=True, params={
-                'prefix': prefix,
-                're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
-                'predict-only': predict_only,
-                'starter_lr': STARTER_LEARNING_RATE,
-                'sample_weights': sample_weights
-            })
+            if True:
+                if predict_only:
+                    #preds = pickle.load(open('predicts', 'rb'))  # need to pair, other wise...
+                    val_mask = pickle.load(open("val_mask", 'rb'))  # only the ones with identity is predicted
+                    kernel.train_mask = np.invert(val_mask)
+                    sample_weights = None
+                else:
+                    sample_weights = kernel.prepare_weight_for_subgroup_balance()
+                    sample_weights = sample_weights[kernel.train_mask]
+                    val_mask = np.invert(kernel.train_mask)
+                    pickle.dump(val_mask, open("val_mask", 'wb'))  # only the ones with identity is predicted
 
-            if NO_AUX:
-                pickle.dump(preds, open("predicts", 'wb'))  # only the ones with identity is predicted
+                train_X = kernel.train_X_all[kernel.train_mask]
+                train_y = kernel.train_y_all[kernel.train_mask]
+
+                val_X = kernel.train_X_all[val_mask]  # all with identity, (it looks like my test test... not right, all with identy ones)
+                val_y = kernel.train_y_all[val_mask]
+                logger.debug(val_X[:10])
+                preds = kernel.run_lstm_model(predict_ones_with_identity=True, params={
+                    'prefix': prefix,
+                    're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
+                    'predict-only': predict_only,
+                    'starter_lr': STARTER_LEARNING_RATE,
+                    'sample_weights': sample_weights,
+                    'train_data': (train_X, train_y),   # train data with identities
+                    'val_data': (val_X, val_y)   # train data with identities
+                })  # only the val_mask ones is predicted TODO modify val set, to resemble test set
+                if NO_AUX:
+                    pickle.dump(preds, open("predicts", 'wb'))  # only the ones with identity is predicted
+                else:
+                    pickle.dump(preds[0], open("predicts", 'wb'))  # only the ones with identity is predicted
+                    preds = preds[0]
+
+                if not predict_only:
+                    pickle.dump((preds, val_mask), open("pred_val_mask", 'wb'))  # only the ones with identity is predicted
             else:
-                pickle.dump(preds[0], open("predicts", 'wb'))  # only the ones with identity is predicted
-                preds = preds[0]
+                preds = pickle.load(open('predicts', 'rb'))  # need to pair, other wise...
+                val_mask = pickle.load(open("val_mask", 'rb'))  # only the ones with identity is predicted
+
         # else:
         #    preds = pickle.load(open('predicts', 'rb'))
-        kernel.calculate_metrics_and_print(preds)
-        set_trace()
+        kernel.train_df.loc[val_mask, 'lstm'] = preds
+        kernel.calculate_metrics_and_print(validate_df_with_preds=kernel.train_df[val_mask], benchmark_base=kernel.train_df[val_mask])
         pd.options.display.float_format = '{:,.2f}'.format
         pd.options.display.max_colwidth = 140
         # df[df.white & (df.target_orig<0.5) & (df.lstm > 0.5)][['comment_text','lstm','target_orig']].head()
@@ -1526,6 +1618,7 @@ def main(argv):
     # kernel.run_identity_model(5, train_id_X, train_id_y, params={
     #    'prefix': "/proc/driver/nvidia/identity"
     # })
+    set_trace()
     return
 
 ANA_RESULT = False

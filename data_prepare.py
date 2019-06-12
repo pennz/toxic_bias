@@ -184,6 +184,7 @@ class TargetDistAnalyzer:
         self.df = target  # df with target, with identity information, then we can sort it out
         self.descretizer = sklearn.preprocessing.KBinsDiscretizer(10+1, encode='ordinal', strategy='uniform')
         self.descretizer.fit(target[TARGET_COLUMN].values.reshape(-1, 1))
+        self.id_used_in_train = None
 
     def get_distribution(self, target_data):
         """
@@ -208,7 +209,7 @@ class TargetDistAnalyzer:
         dstr = {}
 
         for g in IDENTITY_COLUMNS:
-            dstr[g] = self.get_distribution(self.df[self.df[g].fillna(0.)>0.5][TARGET_COLUMN])
+            dstr[g] = self.get_distribution(self.df[self.df[g+'_in_train'].fillna(0.)>=0.5][TARGET_COLUMN])  # could use continuous data, might be helpful so calculate belongs (fuzzy logic)
         return dstr
 
 
@@ -405,6 +406,7 @@ class BiasBenchmark:
             validate_df[model_name] = pred  # prediction
 
         print('In caculating benchmark...')
+        validate_df = BiasBenchmark.copy_convert_dataframe_to_bool(validate_df[IDENTITY_COLUMNS + [TOXICITY_COLUMN, 'comment_text', model_name]], self.threshold)
         bias_metrics_df, subgroup_distribution = BiasBenchmark.compute_bias_metrics_for_model(validate_df,
                                                                        IDENTITY_COLUMNS, model_name, TOXICITY_COLUMN)
         overall_auc_dist = BiasBenchmark.calculate_overall_auc_distribution(validate_df, model_name)
