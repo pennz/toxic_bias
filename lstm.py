@@ -1135,18 +1135,17 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             sample_weights = weights_changer_merged
 
             if balance_AUC == 'more_bp_sn':
-                set_trace()
                 #self.train_df, contains all info
-                benchmark_base = self.train_df[IDENTITY_COLUMNS+].fillna(0).astype(np.bool)
+                benchmark_base = self.train_df[d.IDENTITY_COLUMNS + [d.TOXICITY_COLUMN, d.TEXT_COLUMN]].fillna(0).astype(np.bool)
                 judge = d.BiasBenchmark(benchmark_base, threshold=0.5)  # the idx happen to be the iloc value
                 id_validate_df = judge.validate_df  # converted to binary in judge initailization function
                 toxic_bool_col = id_validate_df[d.TOXICITY_COLUMN]
                 contain_identity_bool_col = id_validate_df[d.IDENTITY_COLUMNS].any(axis=1)
 
                 weights_auc_balancer = ones_weights.copy() / 4
-                weights_auc_balancer[contain_identity_bool_col] += 1/4
-                weights_auc_balancer[toxic_bool_col & ~contain_identity_bool_col] += 1/4  # BPSN, BP part
-                weights_auc_balancer[~toxic_bool_col & contain_identity_bool_col] += 1/4  # still BPSN, SN part
+                weights_auc_balancer[contain_identity_bool_col] += 1/4                    # for subgroup postitive, will be 0.5 weight
+                weights_auc_balancer[toxic_bool_col & ~contain_identity_bool_col] += 1/4  # BPSN, BP part (0.5 weights)
+                weights_auc_balancer[~toxic_bool_col & contain_identity_bool_col] += 1/4  # still BPSN, SN part (0.75 weights)
 
                 sample_weights = np.multiply(sample_weights, weights_auc_balancer)
 
