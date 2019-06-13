@@ -623,10 +623,11 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         if with_aux:
             aux_result = Dense(num_aux_targets, activation='sigmoid')(hidden)
             model = Model(inputs=words, outputs=[result, aux_result])
+            model.compile(loss=[loss, 'binary_crossentropy'], optimizer='adam', loss_weights=[1., 1.], metrics=metrics)
         else:
             model = Model(inputs=words, outputs=result)
+            model.compile(loss=loss, optimizer='adam', metrics=metrics)
 
-        model.compile(loss=loss, optimizer='adam', metrics=metrics)
 
         return model
 
@@ -726,18 +727,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                 if NO_AUX:
                     if FOCAL_LOSS:
                         model = self.build_lstm_model_customed(0, with_aux=False,
-                                   loss=binary_crossentropy_with_focal,
-                                   metrics=[#tf.keras.metrics.Precision(), tf.keras.metrics.Recall(),
-                                           binary_crossentropy, #tf.keras.metrics.Mean(),tf.keras.metrics.SpecificityAtSensitivity(0.50),
-                                           mean_absolute_error,])
-                                           #tf.keras.metrics.SensitivityAtSpecificity(0.9, name='sn_90'),
-                                           #tf.keras.metrics.SensitivityAtSpecificity(0.95, name='sn_95'),
-                                           #tf.keras.metrics.SpecificityAtSensitivity(0.90, name="sp_90"),
-                                           #tf.keras.metrics.SpecificityAtSensitivity(0.95, name="sp_95"),])
-#                        KaggleKernel.bin_prd_clsf_info_neg,
-#                        KaggleKernel.bin_prd_clsf_info_pos])
-                                                                           #tf.keras.metrics.SpecificityAtSensitivity(0.98), tf.keras.metrics.SpecificityAtSensitivity(0.99), tf.keras.metrics.SpecificityAtSensitivity(1.00)
-                        # Sensitivity measures the proportion of actual positives that are correctly identified as such (tp / (tp + fn)).
+                                   loss=binary_crossentropy_with_focal, metrics=[ binary_crossentropy, mean_absolute_error,])
                     else:
                         model = self.build_lstm_model_customed(0, with_aux=False,
                         metrics=[#tf.keras.metrics.Precision(), tf.keras.metrics.Recall(), tf.keras.metrics.SpecificityAtSensitivity(0.50),
@@ -747,7 +737,10 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                             #tf.keras.metrics.SpecificityAtSensitivity(0.90, name="sp_90"),
                             #tf.keras.metrics.SpecificityAtSensitivity(0.95, name="sp_95"),])
                 else:
-                    model = self.build_lstm_model(len(self.train_y_aux[0]))
+                    model = self.build_lstm_model_customed(len(self.train_y_aux[0]),
+                                                           with_aux=False,
+                                                           loss=binary_crossentropy_with_focal,
+                                                           metrics=[binary_crossentropy, mean_absolute_error])
                 self.model = model
                 logger.info('build model -> done')
 
@@ -1370,7 +1363,7 @@ RESTART_TRAIN = True
 RESTART_TRAIN_RES = True
 RESTART_TRAIN_ID = False
 
-NO_AUX = True
+NO_AUX = False
 Y_TRAIN_BIN = False  # with True, slightly worse
 
 FOCAL_LOSS = True
