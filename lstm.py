@@ -310,7 +310,7 @@ class KaggleKernel:
         self.train_y_aux_all = None
         self.train_y_identity = None
         self.train_X_identity = None
-        self.to_predict_X = None
+        #self.to_predict_X = None
         self.embedding_matrix = None
         self.identity_idx = None
         self.id_used_in_train = False
@@ -690,7 +690,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         logger.info('%d train comments, %d validate comments' % (len(train_df), len(validate_df)))'''
 
         #self.oof_preds = np.zeros((self.train_X.shape[0], 1 + self.train_y_aux.shape[1]))
-        test_preds = np.zeros((self.to_predict_X.shape[0]))
+        test_preds = np.zeros((self.to_predict_X_all.shape[0]))
         prefix = params['prefix']
         re_train = params['re-start-train']
         predict_only = params['predict-only']
@@ -709,10 +709,10 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             raise RuntimeError("Need aux labels to train")
 
         val_data = params.get('val_data')
-        if val_data is None:
-            train_X_identity = self.train_X_identity
+        if val_data is None:  # used to dev evaluation
+            val_X = self.train_X_identity
         else:
-            train_X_identity,_ = val_data
+            val_X,_ = val_data
 
         prefix += 'G{:.1f}'.format(FOCAL_LOSS_GAMMA)
 
@@ -775,67 +775,49 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                 y_train = [train_y[tr_ind], train_y_aux[tr_ind]]
                 y_val = [train_y[val_ind], train_y_aux[val_ind]]
 
-            # model.fit(self.train_X[tr_ind],
-            #          #self.train_y[tr_ind]>0.5,
-            #          y_train,
-            #          batch_size=BATCH_SIZE,
-            #          epochs=EPOCHS,
-            #          #steps_per_epoch=int(len(tr_ind)/BATCH_SIZE),
-            #          verbose=0,
-            #          #validation_data=(self.train_X[val_ind], self.train_y[val_ind]>0.5),
-            #          validation_data=(self.train_X[val_ind], y_val),
-            #          callbacks=[
-            #              LearningRateScheduler(
-            #                  #STARTER_LEARNING_RATE = 1e-2
-            #                  #LEARNING_RATE_DECAY_PER_EPOCH = 0.7
-            #                  lambda e: starter_lr * (LEARNING_RATE_DECAY_PER_EPOCH ** e),
-            #                  verbose=1
-            #              ),
-            #              early_stop,
-            #              ckpt,
-            #              tf_fit_batch_logger])
-            if predict_only:
-                break  # do not fit
-            prog_bar_logger = NBatchProgBarLogger(display_per_batches=int(1600000 / 20 / BATCH_SIZE), early_stop=True,
-                                      patience_displays=3)
+            if not predict_only:
+                prog_bar_logger = NBatchProgBarLogger(display_per_batches=int(1600000 / 20 / BATCH_SIZE), early_stop=True,
+                                          patience_displays=3)
 
-            train_labels = train_y if NO_AUX else [train_y, train_y_aux]
+                train_labels = train_y if NO_AUX else [train_y, train_y_aux]
+                if final_train:
+                    val_split = 0.
+                else:
+                    val_split = 0.05
+                model.fit(train_X,
+                          train_labels,
+                          validation_split=val_split,
+                          batch_size=BATCH_SIZE,
+                          epochs=EPOCHS,
+                          sample_weight=sample_weights,
+                          # steps_per_epoch=int(len(self.train_X)*0.95/BATCH_SIZE),
+                          verbose=0,
+                          # validation_data=(self.train_X[val_ind], self.train_y[val_ind]>0.5),
+                          # validation_data=(self.train_X[val_ind], y_val),
+                          callbacks=[
+                              LearningRateScheduler(
+                                  # STARTER_LEARNING_RATE = 1e-2
+                                  # LEARNING_RATE_DECAY_PER_EPOCH = 0.7
+                                  lambda e: starter_lr * (LEARNING_RATE_DECAY_PER_EPOCH ** e),
+                                  verbose=1
+                              ),
+                              early_stop,
+                              ckpt,
+                              prog_bar_logger
+                          ])
+
+                run_times += 1
             if final_train:
-                val_split = 0.
-            else:
-                val_split = 0.05
-            model.fit(train_X,
-                      train_labels,
-                      validation_split=val_split,
-                      batch_size=BATCH_SIZE,
-                      epochs=EPOCHS,
-                      sample_weight=sample_weights,
-                      # steps_per_epoch=int(len(self.train_X)*0.95/BATCH_SIZE),
-                      verbose=0,
-                      # validation_data=(self.train_X[val_ind], self.train_y[val_ind]>0.5),
-                      # validation_data=(self.train_X[val_ind], y_val),
-                      callbacks=[
-                          LearningRateScheduler(
-                              # STARTER_LEARNING_RATE = 1e-2
-                              # LEARNING_RATE_DECAY_PER_EPOCH = 0.7
-                              lambda e: starter_lr * (LEARNING_RATE_DECAY_PER_EPOCH ** e),
-                              verbose=1
-                          ),
-                          early_stop,
-                          ckpt,
-                          prog_bar_logger
-                      ])
-
-            if NO_AUX:
-                test_preds += (np.array(model.predict(self.to_predict_X, verbose=1))).ravel()
-            else:
-                test_preds += (np.array(model.predict(self.to_predict_X, verbose=1)[0])).ravel()
-            run_times += 1
-
-            if train_test_split and not final_train:
-                break
-            #pred = model.predict(self.train_X[val_ind], verbose=1, batch_size=BATCH_SIZE)
-            #self.oof_preds[val_ind] += np.concatenate((pred[0], pred[1]), axis=1)  # target and aux
+                test_result = model.predict(self.to_predict_X_all, verbose=2)
+                if NO_AUX:
+                    test_preds += test_result
+                else:
+                    test_preds += np.array(test_result)[:, 0]
+            elif train_test_split:
+                pred = model.predict(val_X, verbose=1, batch_size=BATCH_SIZE)
+                if not NO_AUX:
+                    pred = pred[:, 0]
+                return pred
 
         test_preds /= run_times
         self.save_result(test_preds)
@@ -1363,7 +1345,7 @@ LEARNING_RATE_DECAY_PER_EPOCH = 0.5
 IDENTITY_RUN = False
 TARGET_RUN = "lstm"
 TARGET_RUN_READ_RESULT = False
-PRD_ONLY = False
+PRD_ONLY = True
 RESTART_TRAIN = False
 RESTART_TRAIN_RES = True
 RESTART_TRAIN_ID = False
@@ -1582,7 +1564,7 @@ def main(argv):
         for idtt in d.IDENTITY_COLUMNS:
         #for idtt in ['male', 'female', 'homosexual_gay_or_lesbian', 'christian', 'jewish','muslim', 'black', 'white', 'psychiatric_or_mental_illness'][6:]:
             if PRD_ONLY:
-                kernel.run_identity_model(idtt, kernel.to_predict_X, None, params={
+                kernel.run_identity_model(idtt, kernel.to_predict_X_all, None, params={
                     'prefix': prefix,
                     'starter_lr': STARTER_LEARNING_RATE,
                     'epochs': 8,
@@ -1629,48 +1611,48 @@ def main(argv):
                 #sample_weight = kernel.prepare_weight_for_subgroup_balance()
                 pass
             else:
-                if True:
-                    sample_weights = kernel.prepare_weight_for_subgroup_balance()
-                    sample_weights_train = sample_weights[kernel.train_mask]
-                    val_mask = np.invert(kernel.train_mask)
-                    pickle.dump(val_mask, open("val_mask", 'wb'))  # only the ones with identity is predicted
+                sample_weights = kernel.prepare_weight_for_subgroup_balance()
+                sample_weights_train = sample_weights[kernel.train_mask]
+                val_mask = np.invert(kernel.train_mask)
+                pickle.dump(val_mask, open("val_mask", 'wb'))  # only the ones with identity is predicted
 
-                    train_X = kernel.train_X_all[kernel.train_mask]
-                    train_y_aux = None
-                    train_y = None
-                    if WEIGHT_TO_Y and sample_weights is not None:
-                        if NO_AUX:
-                            train_y = kernel.prepare_train_labels(kernel.train_y_all, kernel.train_mask, custom_weights=True, with_aux=False, train_y_aux=None, sample_weights=sample_weights)
-                        else:
-                            train_y, train_y_aux = kernel.prepare_train_labels(kernel.train_y_all, kernel.train_mask, custom_weights=True, with_aux=True, train_y_aux=kernel.train_y_aux_all, sample_weights=sample_weights)
-                        sample_weights_train = None  # no need to use in fit, will cooperate to the custom loss function
+                train_X = kernel.train_X_all[kernel.train_mask]
+                train_y_aux = None
+                train_y = None
+                if WEIGHT_TO_Y and sample_weights is not None:
+                    if NO_AUX:
+                        train_y = kernel.prepare_train_labels(kernel.train_y_all, kernel.train_mask, custom_weights=True, with_aux=False, train_y_aux=None, sample_weights=sample_weights)
                     else:
-                        train_y = kernel.train_y_all[kernel.train_mask]
-                        train_y_aux = kernel.train_y_aux_all[kernel.train_mask]
+                        train_y, train_y_aux = kernel.prepare_train_labels(kernel.train_y_all, kernel.train_mask, custom_weights=True, with_aux=True, train_y_aux=kernel.train_y_aux_all, sample_weights=sample_weights)
+                    sample_weights_train = None  # no need to use in fit, will cooperate to the custom loss function
+                else:
+                    train_y = kernel.train_y_all[kernel.train_mask]
+                    train_y_aux = kernel.train_y_aux_all[kernel.train_mask]
 
-                    val_X = kernel.train_X_all[val_mask]  # all with identity, (it looks like my test test... not right, all with identy ones)
-                    val_y = kernel.train_y_all[val_mask]
-                    logger.debug(val_X[:10])
-                    kernel.run_lstm_model(predict_ones_with_identity=True, final_train=FINAL_SUBMIT, params={
-                        'prefix': prefix,
-                        're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
-                        'predict-only': predict_only,
-                        'starter_lr': STARTER_LEARNING_RATE,
-                        'sample_weights': sample_weights_train,
-                        'train_data': (train_X, train_y),   # train data with identities
-                        'train_y_aux': train_y_aux,
-                        'val_data': (val_X, val_y),   # train data with identities
-                        'patience': 2,
-                    })  # only the val_mask ones is predicted TODO modify val set, to resemble test set
+                val_X = kernel.train_X_all[val_mask]  # all with identity, (it looks like my test test... not right, all with identy ones)
+                val_y = kernel.train_y_all[val_mask]
+                #logger.debug(val_X[:10])
+                preds = kernel.run_lstm_model(predict_ones_with_identity=True, final_train=FINAL_SUBMIT, params={
+                    'prefix': prefix,
+                    're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
+                    'predict-only': predict_only,
+                    'starter_lr': STARTER_LEARNING_RATE,
+                    'sample_weights': sample_weights_train,
+                    'train_data': (train_X, train_y),   # train data with identities
+                    'train_y_aux': train_y_aux,
+                    'val_data': (val_X, val_y),   # train data with identities
+                    'patience': 2,
+                })  # only the val_mask ones is predicted TODO modify val set, to resemble test set
         else:
             preds, val_mask = pickle.load(open('pred_val_mask', 'rb'))
 
         # else:
         #    preds = pickle.load(open('predicts', 'rb'))
-        kernel.train_df.loc[val_mask, 'lstm'] = preds
-        kernel.calculate_metrics_and_print(validate_df_with_preds=kernel.train_df[val_mask], benchmark_base=kernel.train_df[val_mask])
-        pd.options.display.float_format = '{:,.2f}'.format
-        pd.options.display.max_colwidth = 140
+        if not FINAL_SUBMIT:
+            kernel.train_df.loc[val_mask, 'lstm'] = preds
+            kernel.calculate_metrics_and_print(validate_df_with_preds=kernel.train_df[val_mask], benchmark_base=kernel.train_df[val_mask])
+            pd.options.display.float_format = '{:,.2f}'.format
+            pd.options.display.max_colwidth = 140
         # df[df.white & (df.target_orig<0.5) & (df.lstm > 0.5)][['comment_text','lstm','target_orig']].head()
         #kernel.evaluate_model_and_print(preds, 0.55)
 
