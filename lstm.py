@@ -689,8 +689,8 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         train_df, validate_df = model_selection.train_test_split(train, test_size=0.2)
         logger.info('%d train comments, %d validate comments' % (len(train_df), len(validate_df)))'''
 
-        self.oof_preds = np.zeros((self.train_X.shape[0], 1 + self.train_y_aux.shape[1]))
-        # test_preds = np.zeros((self.to_predict_X.shape[0]))
+        #self.oof_preds = np.zeros((self.train_X.shape[0], 1 + self.train_y_aux.shape[1]))
+        test_preds = np.zeros((self.to_predict_X.shape[0]))
         prefix = params['prefix']
         re_train = params['re-start-train']
         predict_only = params['predict-only']
@@ -717,7 +717,9 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         prefix += 'G{:.1f}'.format(FOCAL_LOSS_GAMMA)
 
 
+        run_times = 0
         for fold in range(n_splits):
+
             if DEBUG:
                 K.set_session(tf_debug.LocalCLIDebugWrapperSession(tf.Session()))
             else:
@@ -798,10 +800,13 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                                       patience_displays=3)
 
             train_labels = train_y if NO_AUX else [train_y, train_y_aux]
-
+            if final_train:
+                val_split = 0.
+            else:
+                val_split = 0.05
             model.fit(train_X,
                       train_labels,
-                      validation_split=0.05,
+                      validation_split=val_split,
                       batch_size=BATCH_SIZE,
                       epochs=EPOCHS,
                       sample_weight=sample_weights,
@@ -821,26 +826,19 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                           prog_bar_logger
                       ])
 
+            if NO_AUX:
+                test_preds += (np.array(model.predict(self.to_predict_X, verbose=1))).ravel()
+            else:
+                test_preds += (np.array(model.predict(self.to_predict_X, verbose=1)[0])).ravel()
+            run_times += 1
 
-            if train_test_split:
+            if train_test_split and not final_train:
                 break
             #pred = model.predict(self.train_X[val_ind], verbose=1, batch_size=BATCH_SIZE)
             #self.oof_preds[val_ind] += np.concatenate((pred[0], pred[1]), axis=1)  # target and aux
 
-            # test_preds += (np.array(model.predict(self.to_predict_X, verbose=1)[0])).ravel()
-        # test_preds /= 5
-        # self.preds = test_preds
-
-        if NO_AUX:
-            test_pred = (np.array(model.predict(self.to_predict_X_all, verbose=1))).ravel()
-        else:
-            test_pred = (np.array(model.predict(self.to_predict_X_all, verbose=1)[0])).ravel()
-
-        self.save_result(test_pred)
-
-        # train_data = train_input_fn_general(train_X, train_y_aux, args.batch_size, True, split_id=fold, n_splits=5, handle_large=True, shuffle_size=1000, repeat=False)
-        # val_data = eval_input_fn_general(train_X, train_y_aux, args.batch_size, True, split_id=fold, n_splits=5, handle_large=True) # for eval, no need to shuffle
-        # logger.info("after tf data handling")
+        test_preds /= run_times
+        self.save_result(test_preds)
 
     def save_result(self, predictions):
         if self.emb.test_df_id is None:
@@ -1038,18 +1036,21 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 
     def get_identities_for_training(self):
         if not self.id_used_in_train:
-            logger.debug("Use 80% identity data")  # in test set, around 10% data will be with identities (lower than training set)
-            id_df = self.train_df.loc[self.identity_idx]
-            id_train_df = id_df.sample(frac=0.8)
-            id_train_df_idx = id_train_df.index
+            if not FINAL_SUBMIT:
+                logger.debug("Use 80% identity data")  # in test set, around 10% data will be with identities (lower than training set)
+                id_df = self.train_df.loc[self.identity_idx]
+                id_train_df = id_df.sample(frac=0.8)
+                id_train_df_idx = id_train_df.index
+            else:
+                logger.debug("Use 100% identity data")  # in test set, around 10% data will be with identities (lower than training set)
+                id_train_df_idx = self.identity_idx.index
 
             self.train_mask[id_train_df_idx] = 1
 
             self.id_used_in_train = True
-
-            for g in d.IDENTITY_COLUMNS:
-                self.train_df[g+'_in_train'] = 0.
-                self.train_df[g+'_in_train'].loc[id_train_df_idx] = self.train_df[g].loc[id_train_df_idx]  # only the ones larger than 0.5 will ? how about negative example?
+            #for g in d.IDENTITY_COLUMNS:
+            #    self.train_df[g+'_in_train'] = 0.  # column to keep recored what data is used in training
+            #    self.train_df[g+'_in_train'].loc[id_train_df_idx] = self.train_df[g].loc[id_train_df_idx]  # only the ones larger than 0.5 will ? how about negative example?
 
     def prepare_weight_for_subgroup_balance(self):
         ''' to see how other people handle weights [this kernel](https://www.kaggle.com/thousandvoices/simple-lstm)
@@ -1650,7 +1651,7 @@ def main(argv):
                     val_X = kernel.train_X_all[val_mask]  # all with identity, (it looks like my test test... not right, all with identy ones)
                     val_y = kernel.train_y_all[val_mask]
                     logger.debug(val_X[:10])
-                    kernel.run_lstm_model(predict_ones_with_identity=True, params={
+                    kernel.run_lstm_model(predict_ones_with_identity=True, final_train=FINAL_SUBMIT, params={
                         'prefix': prefix,
                         're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
                         'predict-only': predict_only,
@@ -1708,6 +1709,7 @@ BALANCE_SCHEME_AUC = 'more_bp_sn'
 BALANCE_SCHEME_TARGET_SPLITS = 'no_target_bucket_extreme_positive'  # not work, because manual change will corrupt orignial information?
 
 WEIGHT_TO_Y = True
+FINAL_SUBMIT = True
 
 if __name__ == '__main__':
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)
