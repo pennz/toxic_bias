@@ -1092,9 +1092,10 @@ class EmbeddingHandler:
             lstm.logger.debug("restored data from files for training")
             return self.x_train, self.y_train, self.y_aux_train, test_data, emb
         except FileNotFoundError:
-            lstm.logger.debug('cannot restore emb, trainX from file data')
+            lstm.logger.debug('cannot restore emb, trainX from jigsaw kaggle file data')
 
-        if os.path.isfile(DATA_FILE_FLAG) and not self.do_emb_matrix_preparation:
+        #if os.path.isfile(DATA_FILE_FLAG) and not self.do_emb_matrix_preparation:  # in final stage, no need to check this...
+        if not self.do_emb_matrix_preparation:
             # global embedding_matrix
             if action is not None and action == lstm.DATA_ACTION_NO_NEED_LOAD_EMB_M:
                 self.embedding_matrix = None

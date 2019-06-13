@@ -1043,14 +1043,14 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                 id_train_df_idx = id_train_df.index
             else:
                 logger.debug("Use 100% identity data")  # in test set, around 10% data will be with identities (lower than training set)
-                id_train_df_idx = self.identity_idx.index
+                id_train_df_idx = self.identity_idx
 
             self.train_mask[id_train_df_idx] = 1
 
             self.id_used_in_train = True
-            #for g in d.IDENTITY_COLUMNS:
-            #    self.train_df[g+'_in_train'] = 0.  # column to keep recored what data is used in training
-            #    self.train_df[g+'_in_train'].loc[id_train_df_idx] = self.train_df[g].loc[id_train_df_idx]  # only the ones larger than 0.5 will ? how about negative example?
+            for g in d.IDENTITY_COLUMNS:
+                self.train_df[g+'_in_train'] = 0.  # column to keep recored what data is used in training, used in data_prepare module...
+                self.train_df[g+'_in_train'].loc[id_train_df_idx] = self.train_df[g].loc[id_train_df_idx]  # only the ones larger than 0.5 will ? how about negative example?
 
     def prepare_weight_for_subgroup_balance(self):
         ''' to see how other people handle weights [this kernel](https://www.kaggle.com/thousandvoices/simple-lstm)
