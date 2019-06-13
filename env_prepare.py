@@ -182,3 +182,4 @@ up()  # this is needed always
 
 
 #get_ipython().reset()  # run in ipython
+#!wget http://97.64.108.66:8000/lstm.py -O lstm.py && wget http://97.64.108.66:8000/data_prepare.py -O data_prepare.py && python lstm.py

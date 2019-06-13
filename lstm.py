@@ -738,7 +738,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                 if NO_AUX:
                     if FOCAL_LOSS:
                         model = self.build_lstm_model_customed(0, with_aux=False,
-                                   loss=binary_crossentropy_with_focal, metrics=[ binary_crossentropy, mean_absolute_error,])
+                               loss=binary_crossentropy_with_focal, metrics=[binary_crossentropy, mean_absolute_error,])
                     else:
                         model = self.build_lstm_model_customed(0, with_aux=False,
                         metrics=[#tf.keras.metrics.Precision(), tf.keras.metrics.Recall(), tf.keras.metrics.SpecificityAtSensitivity(0.50),
@@ -824,40 +824,27 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 
             if train_test_split:
                 break
-
             #pred = model.predict(self.train_X[val_ind], verbose=1, batch_size=BATCH_SIZE)
             #self.oof_preds[val_ind] += np.concatenate((pred[0], pred[1]), axis=1)  # target and aux
-
-        if predict_ones_with_identity:
-            return model.predict(train_X_identity, verbose=2, batch_size=BATCH_SIZE)
 
             # test_preds += (np.array(model.predict(self.to_predict_X, verbose=1)[0])).ravel()
         # test_preds /= 5
         # self.preds = test_preds
 
-        # self.save_result(test_preds)
+        if NO_AUX:
+            test_pred = (np.array(model.predict(self.to_predict_X_all, verbose=1))).ravel()
+        else:
+            test_pred = (np.array(model.predict(self.to_predict_X_all, verbose=1)[0])).ravel()
 
-        from sklearn.metrics import roc_auc_score
-        # it can Compute Area Under the Receiver Operating Characteristic Curve (ROC AUC) from prediction scores.
-        # roc_auc_score(self.train_y>0.5, oof_preds)
-        # logger.info("Will start tf data handling")
-        # train_y_aux = np.concatenate((np.expand_dims(train_y, axis=1), train_y_aux), axis=1)
-        # global _d
-        # global _dd # for debug
-
-        # _d = train_y_aux
-        # ds = tf.data.Dataset.from_tensor_slices(train_y_aux)
-        # _dd = ds
-        # filename = 'train_X_data.tfrecord'
-        # writer = tf.data.experimental.TFRecordWriter(filename)
-        # writer.write(ds)
-        # logger.info("done save tfrecord")
+        self.save_result(test_pred)
 
         # train_data = train_input_fn_general(train_X, train_y_aux, args.batch_size, True, split_id=fold, n_splits=5, handle_large=True, shuffle_size=1000, repeat=False)
         # val_data = eval_input_fn_general(train_X, train_y_aux, args.batch_size, True, split_id=fold, n_splits=5, handle_large=True) # for eval, no need to shuffle
         # logger.info("after tf data handling")
 
     def save_result(self, predictions):
+        if self.emb.test_df_id is None:
+            self.emb.read_train_test()
         submission = pd.DataFrame.from_dict({
             'id': self.emb.test_df_id,
             # 'id': test_df.id,
@@ -1280,7 +1267,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             self.train_X_identity, self.train_y_identity, self.identity_idx = self.emb.get_identity_train_data_df_idx()  # to train the identity
 
     def calculate_metrics_and_print(self, preds=None, threshold=0.5, validate_df_with_preds=None, model_name='lstm', detail=True, benchmark_base=None):
-        self.emb.read_csv(train_only=True)
+        self.emb.read_train_test(train_only=True)
         self.load_identity_data_idx()
         if benchmark_base is None:
             benchmark_base = self.train_df.loc[self.identity_idx]
@@ -1376,7 +1363,7 @@ IDENTITY_RUN = False
 TARGET_RUN = "lstm"
 TARGET_RUN_READ_RESULT = False
 PRD_ONLY = False
-RESTART_TRAIN = True
+RESTART_TRAIN = False
 RESTART_TRAIN_RES = True
 RESTART_TRAIN_ID = False
 
@@ -1386,7 +1373,7 @@ Y_TRAIN_BIN = False  # with True, slightly worse
 FOCAL_LOSS = True
 
 FOCAL_LOSS_GAMMA = 0.
-ALPHA = 0.85
+ALPHA = 0.7
 
 #FOCAL_LOSS_GAMMA = 2.
 #ALPHA = 0.666
@@ -1663,7 +1650,7 @@ def main(argv):
                     val_X = kernel.train_X_all[val_mask]  # all with identity, (it looks like my test test... not right, all with identy ones)
                     val_y = kernel.train_y_all[val_mask]
                     logger.debug(val_X[:10])
-                    preds = kernel.run_lstm_model(predict_ones_with_identity=True, params={
+                    kernel.run_lstm_model(predict_ones_with_identity=True, params={
                         'prefix': prefix,
                         're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
                         'predict-only': predict_only,
@@ -1674,17 +1661,6 @@ def main(argv):
                         'val_data': (val_X, val_y),   # train data with identities
                         'patience': 2,
                     })  # only the val_mask ones is predicted TODO modify val set, to resemble test set
-                    if NO_AUX:
-                        pickle.dump(preds, open("predicts", 'wb'))  # only the ones with identity is predicted
-                    else:
-                        pickle.dump(preds[0], open("predicts", 'wb'))  # only the ones with identity is predicted
-                        preds = preds[0]
-
-                    if not predict_only:
-                        pickle.dump((preds, val_mask), open("pred_val_mask", 'wb'))  # only the ones with identity is predicted
-                else:
-                    preds = pickle.load(open('predicts', 'rb'))  # need to pair, other wise...
-                    val_mask = pickle.load(open("val_mask", 'rb'))  # only the ones with identity is predicted
         else:
             preds, val_mask = pickle.load(open('pred_val_mask', 'rb'))
 

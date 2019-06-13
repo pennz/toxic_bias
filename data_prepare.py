@@ -740,7 +740,7 @@ class EmbeddingHandler:
     def E_M_FILE(self):
         return self.BIN_FOLDER+"embedding.mat"
 
-    def read_csv(self, train_only=False):
+    def read_train_test(self, train_only=False):
         if self.train_df is None:
             try:
                 self.train_df = pd.read_csv(self.INPUT_DATA_DIR + 'train.csv')
@@ -858,7 +858,7 @@ class EmbeddingHandler:
 
     def get_identity_df(self):
         if not self._text_preprocessed: # then we might be restore from numpy pickle file, so still need to read csv
-            self.read_csv(train_only=True)
+            self.read_train_test()
             #for column in IDENTITY_COLUMNS :
             #    # it seems the .values will make a copy out, so it won't infect above sef.y_train
             #    self.train_df[column] = np.where(self.train_df[column] >= 0.5, True, False)
@@ -1017,7 +1017,7 @@ class EmbeddingHandler:
 
     def prepare_tfrecord_data(self, dump=True, train_test_data=True, embedding=True, action=None):  # 和上一级有耦合，先这样吧
         if action is not None and action == lstm.CONVERT_DATA_Y_NOT_BINARY:  # unpicker, change y
-            self.read_csv(train_only=True)
+            self.read_train_test(train_only=True)
             if not os.path.isfile(DATA_FILE_FLAG):
                 raise FileNotFoundError("Pickle files should be present")
 
@@ -1032,7 +1032,7 @@ class EmbeddingHandler:
                     f.write(bytes("", 'utf-8'))
             return self.x_train, self.y_train, self.y_aux_train, self.x_test, self.embedding_matrix
 
-        self.read_csv()
+        self.read_train_test()
 
         if os.path.isfile(DATA_FILE_FLAG) and not self.do_emb_matrix_preparation and not train_test_data and not embedding:
             # just recover from record file
