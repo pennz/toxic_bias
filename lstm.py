@@ -691,12 +691,18 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         predict_only = params['predict-only']
         sample_weights = params.get('sample_weights')
         train_data = params.get('train_data', None)
+        train_y_aux_passed = params.get('train_y_aux')
         patience = params.get('patience', 3)
         if train_data is None:
             train_X = self.train_X
             train_y = self.train_y
+            train_y_aux = self.train_y_aux
         else:
             train_X, train_y = train_data
+            train_y_aux = train_y_aux_passed
+        if train_y_aux is None and not NO_AUX:
+            raise RuntimeError("Need aux labels to train")
+
         val_data = params.get('val_data')
         if val_data is None:
             train_X_identity = self.train_X_identity
@@ -756,11 +762,11 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 
             # data thing
             if NO_AUX:
-                y_train = self.train_y[tr_ind]
-                y_val = self.train_y[val_ind]
+                y_train = train_y[tr_ind]
+                y_val = train_y[val_ind]
             else:
-                y_train = [self.train_y[tr_ind], self.train_y_aux[tr_ind]]
-                y_val = [self.train_y[val_ind], self.train_y_aux[val_ind]]
+                y_train = [train_y[tr_ind], train_y_aux[tr_ind]]
+                y_val = [train_y[val_ind], train_y_aux[val_ind]]
 
             # model.fit(self.train_X[tr_ind],
             #          #self.train_y[tr_ind]>0.5,
@@ -785,11 +791,11 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                 break  # do not fit
             prog_bar_logger = NBatchProgBarLogger(display_per_batches=int(1600000 / 20 / BATCH_SIZE), early_stop=True,
                                       patience_displays=3)
-            if sample_weights is not None:
-                logger.debug(f"fitting with sample_weight {sample_weights[:10]}...")
+
+            train_labels = train_y if NO_AUX else [train_y, train_y_aux]
+
             model.fit(train_X,
-                      # self.train_y[tr_ind]>0.5,
-                      train_y,
+                      train_labels,
                       validation_split=0.05,
                       batch_size=BATCH_SIZE,
                       epochs=EPOCHS,
@@ -1161,14 +1167,20 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 
         return weights
 
-    def prepare_y_ture(self, train_y_all, train_mask, custom_weights=False, with_aux=False, sample_weights=None, aux_data=None):
+    def prepare_train_labels(self, train_y_all, train_mask, custom_weights=False, with_aux=False, train_y_aux=None, sample_weights=None):
         if not custom_weights:
-            return train_y_all[train_mask]
+            if with_aux:
+                return train_y_all[train_mask], train_y_aux[train_mask]
+            else:
+                return train_y_all[train_mask]
         else:
             # credit to https://www.kaggle.com/tanreinama/simple-lstm-using-identity-parameters-solution
             if sample_weights is None:
                 raise RuntimeError('sample weights cannot be None if use custom_weights')
-            return np.vstack([train_y_all, sample_weights]).T[train_mask]
+            if with_aux:
+                return np.vstack([train_y_all, sample_weights]).T[train_mask], train_y_aux[train_mask]
+            else:
+                return np.vstack([train_y_all, sample_weights]).T[train_mask]
 
     def res_subgroup(self, subgroup, y_pred):
         # first prepare the data
@@ -1369,7 +1381,7 @@ Y_TRAIN_BIN = False  # with True, slightly worse
 FOCAL_LOSS = True
 
 FOCAL_LOSS_GAMMA = 0.
-ALPHA = 0.91
+ALPHA = 0.80
 
 #FOCAL_LOSS_GAMMA = 2.
 #ALPHA = 0.666
@@ -1631,11 +1643,17 @@ def main(argv):
                     pickle.dump(val_mask, open("val_mask", 'wb'))  # only the ones with identity is predicted
 
                     train_X = kernel.train_X_all[kernel.train_mask]
+                    train_y_aux = None
+                    train_y = None
                     if WEIGHT_TO_Y and sample_weights is not None:
-                        train_y = kernel.prepare_y_ture(kernel.train_y_all, kernel.train_mask, custom_weights=True, with_aux=False, sample_weights=sample_weights)
+                        if NO_AUX:
+                            train_y = kernel.prepare_train_labels(kernel.train_y_all, kernel.train_mask, custom_weights=True, with_aux=False, train_y_aux=None, sample_weights=sample_weights)
+                        else:
+                            train_y, train_y_aux = kernel.prepare_train_labels(kernel.train_y_all, kernel.train_mask, custom_weights=True, with_aux=True, train_y_aux=kernel.train_y_aux_all, sample_weights=sample_weights)
                         sample_weights_train = None  # no need to use in fit, will cooperate to the custom loss function
                     else:
                         train_y = kernel.train_y_all[kernel.train_mask]
+                        train_y_aux = kernel.train_y_aux_all[kernel.train_mask]
 
                     val_X = kernel.train_X_all[val_mask]  # all with identity, (it looks like my test test... not right, all with identy ones)
                     val_y = kernel.train_y_all[val_mask]
@@ -1647,6 +1665,7 @@ def main(argv):
                         'starter_lr': STARTER_LEARNING_RATE,
                         'sample_weights': sample_weights_train,
                         'train_data': (train_X, train_y),   # train data with identities
+                        'train_y_aux': train_y_aux,
                         'val_data': (val_X, val_y),   # train data with identities
                         'patience': 2,
                     })  # only the val_mask ones is predicted TODO modify val set, to resemble test set
