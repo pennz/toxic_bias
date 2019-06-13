@@ -623,10 +623,11 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         if with_aux:
             aux_result = Dense(num_aux_targets, activation='sigmoid')(hidden)
             model = Model(inputs=words, outputs=[result, aux_result])
+            model.compile(loss=[loss, 'binary_crossentropy'], optimizer='adam', loss_weights=[1., 1.], metrics=metrics)
         else:
             model = Model(inputs=words, outputs=result)
+            model.compile(loss=loss, optimizer='adam', metrics=metrics)
 
-        model.compile(loss=loss, optimizer='adam', metrics=metrics)
 
         return model
 
@@ -1370,7 +1371,7 @@ RESTART_TRAIN = True
 RESTART_TRAIN_RES = True
 RESTART_TRAIN_ID = False
 
-NO_AUX = True
+NO_AUX = False
 Y_TRAIN_BIN = False  # with True, slightly worse
 
 FOCAL_LOSS = True
