@@ -1,7 +1,6 @@
 import subprocess
 import os
 import gc
-import psutil
 
 USER_NAME='pengyu'
 TFRECORD_FILDATA_FLAG = '.tf_record_saved'
@@ -111,12 +110,6 @@ def mount_gdrive():
 #upload_file_one_at_a_time("/sync/AI/dog-breed/kaggle-dog-breed/src/solver/server.py")
 #download_file_one_at_a_time("kaggle.json")
 #download_file_one_at_a_time("server.py")
-
-def do_gc():
-    process = psutil.Process(os.getpid())
-    print('start', process.memory_info().rss)
-    gc.collect()
-    print('called gc collect', process.memory_info().rss)
 
 def list_submisstion():
     run_process_print("kaggle competitions submissions -c jigsaw-unintended-bias-in-toxicity-classification")
