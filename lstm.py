@@ -27,11 +27,12 @@ import copy
 
 from IPython.core.debugger import set_trace
 from tensorflow.python import debug as tf_debug
+import gc
 
 # NUM_MODELS = 2  # might be helpful but...
 
 # BATCH_SIZE = 2048 * 2  # for cloud server runing
-BATCH_SIZE = 1024  # for cloud server runing
+BATCH_SIZE = 1024//2  # for cloud server runing
 LSTM_UNITS = 128
 DENSE_HIDDEN_UNITS = 4 * LSTM_UNITS
 RES_DENSE_HIDDEN_UNITS = 5
@@ -323,6 +324,12 @@ class KaggleKernel:
     def load_data(self, action):
         if self.emb is None:
             self.emb = d.EmbeddingHandler()
+
+        if PRD_ONLY or TARGET_RUN_READ_RESULT or ANA_RESULT:
+            pass
+        else:  # keep record training parameters
+            self.emb.dump_obj(f'Start run with FL_{FOCAL_LOSS}_{FOCAL_LOSS_GAMMA}_{ALPHA} lr {STARTER_LEARNING_RATE}, decay {LEARNING_RATE_DECAY_PER_EPOCH}, \
+BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN}', 'run_info', force=True)
 
         self.train_X_all, self.train_y_all, self.train_y_aux_all, self.to_predict_X_all, self.embedding_matrix = self.emb.data_prepare(
             action)
@@ -683,6 +690,7 @@ class KaggleKernel:
         predict_only = params['predict-only']
         sample_weights = params.get('sample_weights')
         train_data = params.get('train_data', None)
+        patience = params.get('patience', 3)
         if train_data is None:
             train_X = self.train_X
             train_y = self.train_y
@@ -710,7 +718,7 @@ class KaggleKernel:
                 h5_file = prefix + '_attention_lstm_' + f'{fold}.hdf5'  # we could load with file name, then remove and save to new one
 
             ckpt = ModelCheckpoint(h5_file, save_best_only=True, verbose=1)
-            early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=1, restore_best_weights=True)
+            early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=patience, restore_best_weights=True)
 
             starter_lr = params.get('starter_lr', STARTER_LEARNING_RATE)
             # model thing
@@ -719,13 +727,13 @@ class KaggleKernel:
                     if FOCAL_LOSS:
                         model = self.build_lstm_model_customed(0, with_aux=False,
                                    loss=binary_crossentropy_with_focal,
-                                   metrics=[tf.keras.metrics.Precision(), tf.keras.metrics.Recall(),
+                                   metrics=[#tf.keras.metrics.Precision(), tf.keras.metrics.Recall(),
                                            binary_crossentropy, #tf.keras.metrics.Mean(),tf.keras.metrics.SpecificityAtSensitivity(0.50),
-                                           mean_absolute_error,
-                                           tf.keras.metrics.SensitivityAtSpecificity(0.9, name='sn_90'),
-                                           tf.keras.metrics.SensitivityAtSpecificity(0.95, name='sn_95'),
-                                           tf.keras.metrics.SpecificityAtSensitivity(0.90, name="sp_90"),
-                                           tf.keras.metrics.SpecificityAtSensitivity(0.95, name="sp_95"),])
+                                           mean_absolute_error,])
+                                           #tf.keras.metrics.SensitivityAtSpecificity(0.9, name='sn_90'),
+                                           #tf.keras.metrics.SensitivityAtSpecificity(0.95, name='sn_95'),
+                                           #tf.keras.metrics.SpecificityAtSensitivity(0.90, name="sp_90"),
+                                           #tf.keras.metrics.SpecificityAtSensitivity(0.95, name="sp_95"),])
 #                        KaggleKernel.bin_prd_clsf_info_neg,
 #                        KaggleKernel.bin_prd_clsf_info_pos])
                                                                            #tf.keras.metrics.SpecificityAtSensitivity(0.98), tf.keras.metrics.SpecificityAtSensitivity(0.99), tf.keras.metrics.SpecificityAtSensitivity(1.00)
@@ -733,11 +741,11 @@ class KaggleKernel:
                     else:
                         model = self.build_lstm_model_customed(0, with_aux=False,
                         metrics=[#tf.keras.metrics.Precision(), tf.keras.metrics.Recall(), tf.keras.metrics.SpecificityAtSensitivity(0.50),
-                            mean_absolute_error,
-                            tf.keras.metrics.SensitivityAtSpecificity(0.9, name='sn_90'),
-                            tf.keras.metrics.SensitivityAtSpecificity(0.95, name='sn_95'),
-                            tf.keras.metrics.SpecificityAtSensitivity(0.90, name="sp_90"),
-                            tf.keras.metrics.SpecificityAtSensitivity(0.95, name="sp_95"),])
+                            mean_absolute_error,])
+                            #tf.keras.metrics.SensitivityAtSpecificity(0.9, name='sn_90'),
+                            #tf.keras.metrics.SensitivityAtSpecificity(0.95, name='sn_95'),
+                            #tf.keras.metrics.SpecificityAtSensitivity(0.90, name="sp_90"),
+                            #tf.keras.metrics.SpecificityAtSensitivity(0.95, name="sp_95"),])
                 else:
                     model = self.build_lstm_model(len(self.train_y_aux[0]))
                 self.model = model
@@ -748,6 +756,10 @@ class KaggleKernel:
                 starter_lr = starter_lr * LEARNING_RATE_DECAY_PER_EPOCH ** (EPOCHS)
                 self.model = model
                 logger.debug('restore from the model file {} -> done'.format(h5_file))
+
+            if self.embedding_matrix is not None:
+                del self.embedding_matrix
+                gc.collect()
 
             # data thing
             if NO_AUX:
@@ -1069,8 +1081,11 @@ class KaggleKernel:
         self.get_identities_for_training()
         gs = analyzer.get_distribution_subgroups()  # for subgroup, use 0.5 as the limit, continuous info not used... anyway, we try first
 
-        balance_scheme_subgroups = 'target_bucket_same_for_subgroups' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
-        balance_scheme_target_splits = 'no_target_bucket_same_for_target_splits' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
+        balance_scheme_subgroups = BALANCE_SCHEME_SUBGROUPS # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
+        balance_scheme_across_subgroups = BALANCE_SCHEME_ACROSS_SUBGROUPS  # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
+        #balance_scheme_target_splits = 'target_bucket_same_for_target_splits' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
+        balance_scheme_target_splits = BALANCE_SCHEME_TARGET_SPLITS  # not work, because manual change will corrupt orignial information?
+        balance_AUC = BALANCE_SCHEME_AUC
 
         def add_weight(balance_scheme_subgroups, balance_group=False):  # need a parameter for all pos v.s. neg., and for different
             # target value, how do we balance?
@@ -1092,7 +1107,24 @@ class KaggleKernel:
                         split_idx_in_df = v[target_split_idx][3]  # [3] is the index
                         gs_weights[g][split_idx_in_df] *= ratio
 
-            weights_changer = np.transpose([v for v in gs_weights.values()])
+            if balance_scheme_across_subgroups == 'more_for_low_score':  # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
+                subgroup_weights = {}
+                subgroup_weights['homosexual_gay_or_lesbian'] = 4
+                subgroup_weights['black'] = 3
+                subgroup_weights['white'] = 3
+                subgroup_weights['muslim'] = 2.5
+                subgroup_weights['jewish'] = 4
+                """
+    'male', 'female', 'homosexual_gay_or_lesbian', 'christian', 'jewish',
+    'muslim', 'black', 'white', 'psychiatric_or_mental_illness'
+                """
+                for g in subgroup_weights.keys():
+                    subgroup_dist = gs[g]
+                    for dstr in subgroup_dist:
+                        split_idx_in_df = dstr[3]
+                        gs_weights[g][split_idx_in_df] *= subgroup_weights[g]
+
+            weights_changer = np.transpose([v for v in gs_weights.values()])  # shape will be [sample nubmers , subgroups] as some sample might be in two groups
             weights_changer_max = np.amax(weights_changer, axis=1)
             weights_changer_min = np.amin(weights_changer, axis=1)
             weights_changer_mean = np.mean(weights_changer, axis=1)
@@ -1102,15 +1134,49 @@ class KaggleKernel:
 
             sample_weights = weights_changer_merged
 
+            if balance_AUC == 'more_bp_sn':
+                set_trace()
+                #self.train_df, contains all info
+                benchmark_base = self.train_df[IDENTITY_COLUMNS+].fillna(0).astype(np.bool)
+                judge = d.BiasBenchmark(benchmark_base, threshold=0.5)  # the idx happen to be the iloc value
+                id_validate_df = judge.validate_df  # converted to binary in judge initailization function
+                toxic_bool_col = id_validate_df[d.TOXICITY_COLUMN]
+                contain_identity_bool_col = id_validate_df[d.IDENTITY_COLUMNS].any(axis=1)
+
+                weights_auc_balancer = ones_weights.copy() / 4
+                weights_auc_balancer[contain_identity_bool_col] += 1/4
+                weights_auc_balancer[toxic_bool_col & ~contain_identity_bool_col] += 1/4  # BPSN, BP part
+                weights_auc_balancer[~toxic_bool_col & contain_identity_bool_col] += 1/4  # still BPSN, SN part
+
+                sample_weights = np.multiply(sample_weights, weights_auc_balancer)
+
+            wanted_split_ratios = None
+
             if balance_scheme_target_splits == 'target_bucket_same_for_target_splits':
+                wanted_split_ratios = [1/len(background_target_ratios)] * len(background_target_ratios)
+            elif balance_scheme_target_splits == 'target_bucket_extreme_positive':
+                wanted_split_ratios = [2,2,2,2,2, 10, 15, 20, 20, 15, 10]  # 0 0.1 0.2 0.3 ... 1  # good
+
+            if wanted_split_ratios is not None:
+                assert len(wanted_split_ratios) == len(background_target_ratios)
                 for target_split_idx, ratio in enumerate(background_target_ratios):
                     idx_for_split = o[target_split_idx][3]
-                    sample_weights[idx_for_split] *= 1/len(background_target_ratios) / ratio  # 1/len(b_t_r) is what we want
+                    sample_weights[idx_for_split] *= wanted_split_ratios[target_split_idx] / ratio  # 1/len(b_t_r) is what we want
 
             sample_weights /= sample_weights.mean()  # normalize
             return sample_weights
+        weights = add_weight(balance_scheme_subgroups)
 
-        return add_weight(balance_scheme_subgroups)
+        return weights
+
+    def prepare_y_ture(self, train_y_all, train_mask, custom_weights=False, with_aux=False, sample_weights=None, aux_data=None):
+        if not custom_weights:
+            return train_y_all[train_mask]
+        else:
+            # credit to https://www.kaggle.com/tanreinama/simple-lstm-using-identity-parameters-solution
+            if sample_weights is None:
+                raise RuntimeError('sample weights cannot be None if use custom_weights')
+            return np.vstack([train_y_all, sample_weights]).T[train_mask]
 
     def res_subgroup(self, subgroup, y_pred):
         # first prepare the data
@@ -1294,11 +1360,12 @@ X,y,idx_train_background, idx_val_background = None, None,None,None
 y_res_pred = None
 
 # lambda e: 5e-3 * (0.5 ** e),
-STARTER_LEARNING_RATE = 2e-3 # as the BCE we adopted...
+STARTER_LEARNING_RATE = 1e-3 # as the BCE we adopted...
 LEARNING_RATE_DECAY_PER_EPOCH = 0.5
 
 IDENTITY_RUN = False
 TARGET_RUN = "lstm"
+TARGET_RUN_READ_RESULT = False
 PRD_ONLY = False
 RESTART_TRAIN = True
 RESTART_TRAIN_RES = True
@@ -1310,7 +1377,7 @@ Y_TRAIN_BIN = False  # with True, slightly worse
 FOCAL_LOSS = True
 
 FOCAL_LOSS_GAMMA = 0.
-ALPHA = 0.8
+ALPHA = 0.91
 
 #FOCAL_LOSS_GAMMA = 2.
 #ALPHA = 0.666
@@ -1437,7 +1504,7 @@ def binary_auc_probability(y_true, y_pred, threshold=0.5, N_MORE=True, epsilon=1
     # return m
 
 
-def binary_crossentropy_with_focal(y_true, y_pred, gamma=FOCAL_LOSS_GAMMA, alpha=ALPHA):  # 0.5 means no rebalance
+def binary_crossentropy_with_focal(y_true, y_pred, gamma=FOCAL_LOSS_GAMMA, alpha=ALPHA, custom_weights_in_y_true=True):  # 0.5 means no rebalance
     """
     https://arxiv.org/pdf/1708.02002.pdf
 
@@ -1464,6 +1531,10 @@ def binary_crossentropy_with_focal(y_true, y_pred, gamma=FOCAL_LOSS_GAMMA, alpha
 
     eps = tf.keras.backend.epsilon()
 
+    if custom_weights_in_y_true:
+        custom_weights = y_true[:, 1:2]
+        y_true = y_true[:, :1]
+
     if 1. - eps <= gamma <= 1. + eps:
         bce = alpha * math_ops.multiply(1. - y_pred, math_ops.multiply(y_true, math_ops.log(y_pred + eps)))
         bce += (1 - alpha) * math_ops.multiply(y_pred,
@@ -1478,7 +1549,10 @@ def binary_crossentropy_with_focal(y_true, y_pred, gamma=FOCAL_LOSS_GAMMA, alpha
         bce += (1 - alpha) * math_ops.multiply(math_ops.pow(y_pred, gamma_tensor),
                                                math_ops.multiply((1. - y_true), math_ops.log(1. - y_pred + eps)))
 
-    return -bce
+    if custom_weights_in_y_true:
+        return math_ops.multiply(-bce, custom_weights)
+    else:
+        return -bce
 
 
 def main(argv):
@@ -1490,7 +1564,8 @@ def main(argv):
     action = None
     if CONVERT_DATA:
         # action = TRAIN_DATA_EXCLUDE_IDENDITY_ONES
-        action = CONVERT_DATA_Y_NOT_BINARY
+        #action = CONVERT_DATA_Y_NOT_BINARY
+        action = CONVERT_TRAIN_DATA  # given the pickle of numpy train data
     else:
         if EXCLUDE_IDENTITY_IN_TRAIN and not IDENTITY_RUN:  # for identity, need to predict for all train data
             action = TRAIN_DATA_EXCLUDE_IDENDITY_ONES
@@ -1551,49 +1626,51 @@ def main(argv):
 
         kernel.train_df = kernel.emb.train_df
 
-        if ANA_RESULT:
-            #preds = pickle.load(open('predicts', 'rb'))
-            #sample_weight = kernel.prepare_weight_for_subgroup_balance()
-            pass
-        else:
-            if True:
-                if predict_only:
-                    #preds = pickle.load(open('predicts', 'rb'))  # need to pair, other wise...
-                    val_mask = pickle.load(open("val_mask", 'rb'))  # only the ones with identity is predicted
-                    kernel.train_mask = np.invert(val_mask)
-                    sample_weights = None
-                else:
+        if not TARGET_RUN_READ_RESULT:
+            if ANA_RESULT:
+                #preds = pickle.load(open('predicts', 'rb'))
+                #sample_weight = kernel.prepare_weight_for_subgroup_balance()
+                pass
+            else:
+                if True:
                     sample_weights = kernel.prepare_weight_for_subgroup_balance()
-                    sample_weights = sample_weights[kernel.train_mask]
+                    sample_weights_train = sample_weights[kernel.train_mask]
                     val_mask = np.invert(kernel.train_mask)
                     pickle.dump(val_mask, open("val_mask", 'wb'))  # only the ones with identity is predicted
 
-                train_X = kernel.train_X_all[kernel.train_mask]
-                train_y = kernel.train_y_all[kernel.train_mask]
+                    train_X = kernel.train_X_all[kernel.train_mask]
+                    if WEIGHT_TO_Y and sample_weights is not None:
+                        train_y = kernel.prepare_y_ture(kernel.train_y_all, kernel.train_mask, custom_weights=True, with_aux=False, sample_weights=sample_weights)
+                        sample_weights_train = None  # no need to use in fit, will cooperate to the custom loss function
+                    else:
+                        train_y = kernel.train_y_all[kernel.train_mask]
 
-                val_X = kernel.train_X_all[val_mask]  # all with identity, (it looks like my test test... not right, all with identy ones)
-                val_y = kernel.train_y_all[val_mask]
-                logger.debug(val_X[:10])
-                preds = kernel.run_lstm_model(predict_ones_with_identity=True, params={
-                    'prefix': prefix,
-                    're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
-                    'predict-only': predict_only,
-                    'starter_lr': STARTER_LEARNING_RATE,
-                    'sample_weights': sample_weights,
-                    'train_data': (train_X, train_y),   # train data with identities
-                    'val_data': (val_X, val_y)   # train data with identities
-                })  # only the val_mask ones is predicted TODO modify val set, to resemble test set
-                if NO_AUX:
-                    pickle.dump(preds, open("predicts", 'wb'))  # only the ones with identity is predicted
+                    val_X = kernel.train_X_all[val_mask]  # all with identity, (it looks like my test test... not right, all with identy ones)
+                    val_y = kernel.train_y_all[val_mask]
+                    logger.debug(val_X[:10])
+                    preds = kernel.run_lstm_model(predict_ones_with_identity=True, params={
+                        'prefix': prefix,
+                        're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
+                        'predict-only': predict_only,
+                        'starter_lr': STARTER_LEARNING_RATE,
+                        'sample_weights': sample_weights_train,
+                        'train_data': (train_X, train_y),   # train data with identities
+                        'val_data': (val_X, val_y),   # train data with identities
+                        'patience': 2,
+                    })  # only the val_mask ones is predicted TODO modify val set, to resemble test set
+                    if NO_AUX:
+                        pickle.dump(preds, open("predicts", 'wb'))  # only the ones with identity is predicted
+                    else:
+                        pickle.dump(preds[0], open("predicts", 'wb'))  # only the ones with identity is predicted
+                        preds = preds[0]
+
+                    if not predict_only:
+                        pickle.dump((preds, val_mask), open("pred_val_mask", 'wb'))  # only the ones with identity is predicted
                 else:
-                    pickle.dump(preds[0], open("predicts", 'wb'))  # only the ones with identity is predicted
-                    preds = preds[0]
-
-                if not predict_only:
-                    pickle.dump((preds, val_mask), open("pred_val_mask", 'wb'))  # only the ones with identity is predicted
-            else:
-                preds = pickle.load(open('predicts', 'rb'))  # need to pair, other wise...
-                val_mask = pickle.load(open("val_mask", 'rb'))  # only the ones with identity is predicted
+                    preds = pickle.load(open('predicts', 'rb'))  # need to pair, other wise...
+                    val_mask = pickle.load(open("val_mask", 'rb'))  # only the ones with identity is predicted
+        else:
+            preds, val_mask = pickle.load(open('pred_val_mask', 'rb'))
 
         # else:
         #    preds = pickle.load(open('predicts', 'rb'))
@@ -1618,7 +1695,6 @@ def main(argv):
     # kernel.run_identity_model(5, train_id_X, train_id_y, params={
     #    'prefix': "/proc/driver/nvidia/identity"
     # })
-    set_trace()
     return
 
 ANA_RESULT = False
@@ -1633,15 +1709,23 @@ if os.path.isfile('.ana_result'):
 
 id_preds = {}
 
+BALANCE_SCHEME_SUBGROUPS = 'target_bucket_same_for_subgroups' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
+BALANCE_SCHEME_ACROSS_SUBGROUPS = 'more_for_low_score'  # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
+BALANCE_SCHEME_AUC = 'more_bp_sn'
+#balance_scheme_target_splits = 'target_bucket_same_for_target_splits' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
+BALANCE_SCHEME_TARGET_SPLITS = 'no_target_bucket_extreme_positive'  # not work, because manual change will corrupt orignial information?
+
+WEIGHT_TO_Y = True
+
 if __name__ == '__main__':
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)
     logger.info(
         f'Start run with FL_{FOCAL_LOSS}_{FOCAL_LOSS_GAMMA}_{ALPHA} lr {STARTER_LEARNING_RATE}, decay {LEARNING_RATE_DECAY_PER_EPOCH}, \
 BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, \
-EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN}')
+EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN}\n{BALANCE_SCHEME_SUBGROUPS} {BALANCE_SCHEME_ACROSS_SUBGROUPS} {BALANCE_SCHEME_TARGET_SPLITS} {BALANCE_SCHEME_AUC}')
     main([1])
     # tf.compat.v1.app.run(main)
     logger.info(
         f'Start run with FL_{FOCAL_LOSS}_{FOCAL_LOSS_GAMMA}_{ALPHA} lr {STARTER_LEARNING_RATE}, decay {LEARNING_RATE_DECAY_PER_EPOCH}, \
 BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, \
-EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN}')
+EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN}\n{BALANCE_SCHEME_SUBGROUPS} {BALANCE_SCHEME_ACROSS_SUBGROUPS} {BALANCE_SCHEME_TARGET_SPLITS} {BALANCE_SCHEME_AUC}')

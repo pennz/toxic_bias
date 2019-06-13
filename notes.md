@@ -66,6 +66,9 @@ so steps:
 4. use other hand picked features, like length / complexity of grammar (feature engineering)
 **length** **word count** might be useful feature (also length/words)
 
+## 
+my val set, contains to many ones with identity (40%, so need 3 fold more data to the val, so it will be like normal)?
+
 ## what other people do 
 debiased word embedding
 gender swap (GS) augment the training data by swapping (somewhat not ideal, as some might asymmetric, but should more positive benefit overall)
