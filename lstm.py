@@ -594,6 +594,11 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         with_BN: ... BatchNormalization not work, because different subgroup different info, batch normalize will make it worse?
         """
         logger.debug(f'model detail: loss {loss}, hidden_act {hidden_act}, with_BN {with_BN}')
+        if num_aux_targets > 0 and not with_aux:
+            raise RuntimeError("aux features numbers given but aux not enabled")
+        if num_aux_targets <= 0 and with_aux:
+            raise RuntimeError('aux features numbers invalid when aux enabled')
+
         words = Input(shape=(d.MAX_LEN,))  # (None, 180)
         x = Embedding(*self.embedding_matrix.shape, weights=[self.embedding_matrix], trainable=False)(words)
 
@@ -744,7 +749,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                             #tf.keras.metrics.SpecificityAtSensitivity(0.95, name="sp_95"),])
                 else:
                     model = self.build_lstm_model_customed(len(self.train_y_aux[0]),
-                                                           with_aux=False,
+                                                           with_aux=True,
                                                            loss=binary_crossentropy_with_focal,
                                                            metrics=[binary_crossentropy, mean_absolute_error])
                 self.model = model
@@ -1381,7 +1386,7 @@ Y_TRAIN_BIN = False  # with True, slightly worse
 FOCAL_LOSS = True
 
 FOCAL_LOSS_GAMMA = 0.
-ALPHA = 0.80
+ALPHA = 0.85
 
 #FOCAL_LOSS_GAMMA = 2.
 #ALPHA = 0.666
