@@ -183,3 +183,6 @@ up()  # this is needed always
 
 #get_ipython().reset()  # run in ipython
 #!wget http://97.64.108.66:8000/lstm.py -O lstm.py && wget http://97.64.108.66:8000/data_prepare.py -O data_prepare.py && python lstm.py
+# https://drive.google.com/file/d/1A3vj6mBUTGYnvd4HfDyI9hBT78IWyABf/view?usp=sharing
+# https://drive.google.com/open?id=1V651fAb8_RxDF--VfHWlUQ8wTzULPPyu
+# https://drive.google.com/open?id=144glCjAb6rTJXNddslpc-mgQBCGGybTr
