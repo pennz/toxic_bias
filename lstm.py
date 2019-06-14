@@ -37,7 +37,7 @@ LSTM_UNITS = 128
 DENSE_HIDDEN_UNITS = 4 * LSTM_UNITS
 RES_DENSE_HIDDEN_UNITS = 5
 
-EPOCHS = 6  # 4 seems good for current setting, more training will help for the final score?
+EPOCHS = 1  # 4 seems good for current setting, more training will help for the final score?
 
 from tensorflow.keras import initializers, regularizers, constraints
 
@@ -706,6 +706,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         sample_weights = params.get('sample_weights')
         train_data = params.get('train_data', None)
         train_y_aux_passed = params.get('train_y_aux')
+        val_y_aux_passed = params.get('val_y_aux')
         patience = params.get('patience', 3)
         if train_data is None:
             train_X = self.train_X
@@ -714,14 +715,17 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         else:
             train_X, train_y = train_data
             train_y_aux = train_y_aux_passed
+            val_y_aux = val_y_aux_passed
         if train_y_aux is None and not NO_AUX:
             raise RuntimeError("Need aux labels to train")
+        if val_y_aux is None and not NO_AUX:
+            raise RuntimeError("Need aux labels to validate")
 
         val_data = params.get('val_data')
         if val_data is None:  # used to dev evaluation
             val_X = self.train_X_identity
         else:
-            val_X,_ = val_data
+            val_X, val_y = val_data
 
         prefix += 'G{:.1f}'.format(FOCAL_LOSS_GAMMA)
 
@@ -786,20 +790,21 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                                           patience_displays=3)
 
                 train_labels = train_y if NO_AUX else [train_y, train_y_aux]
-                if final_train:
-                    val_split = 0.
-                else:
-                    val_split = 0.05
+                val_labels = val_y if NO_AUX else [val_y, val_y_aux]
+                #if final_train:
+                #    val_split = 0.
+                #else:
+                #    val_split = 0.05
                 model.fit(train_X,
                           train_labels,
-                          validation_split=val_split,
+                          #validation_split=val_split,
                           batch_size=BATCH_SIZE,
                           epochs=EPOCHS,
                           sample_weight=sample_weights,
                           # steps_per_epoch=int(len(self.train_X)*0.95/BATCH_SIZE),
                           verbose=0,
                           # validation_data=(self.train_X[val_ind], self.train_y[val_ind]>0.5),
-                          # validation_data=(self.train_X[val_ind], y_val),
+                          validation_data=(val_X, val_labels),
                           callbacks=[
                               LearningRateScheduler(
                                   # STARTER_LEARNING_RATE = 1e-2
@@ -1025,14 +1030,14 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 
     def get_identities_for_training(self):
         if not self.id_used_in_train:
-            if not FINAL_SUBMIT:
-                logger.debug("Use 90% identity data")  # in test set, around 10% data will be with identities (lower than training set)
-                id_df = self.train_df.loc[self.identity_idx]
-                id_train_df = id_df.sample(frac=0.9)  # 40,000 remained for val
-                id_train_df_idx = id_train_df.index
-            else:
-                logger.debug("Use 100% identity data")  # in test set, around 10% data will be with identities (lower than training set)
-                id_train_df_idx = self.identity_idx
+#            if not FINAL_SUBMIT:
+            logger.debug("Use 90% identity data")  # in test set, around 10% data will be with identities (lower than training set)
+            id_df = self.train_df.loc[self.identity_idx]
+            id_train_df = id_df.sample(frac=0.9)  # 40,000 remained for val
+            id_train_df_idx = id_train_df.index
+#            else:  # we still need these ... for the early stop thing!!!
+#                logger.debug("Use 100% identity data")  # in test set, around 10% data will be with identities (lower than training set)
+#                id_train_df_idx = self.identity_idx
 
             self.train_mask[id_train_df_idx] = 1
 
@@ -1088,7 +1093,6 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                         split_idx_in_df = v[target_split_idx][3]  # [3] is the index
                         gs_weights[g][split_idx_in_df] *= ratio
 
-            set_trace()
             if balance_scheme_across_subgroups == 'more_for_low_score':  # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
                 subgroup_weights = {}
                 subgroup_weights['homosexual_gay_or_lesbian'] = 4
@@ -1151,19 +1155,26 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         return weights
 
     def prepare_train_labels(self, train_y_all, train_mask, custom_weights=False, with_aux=False, train_y_aux=None, sample_weights=None):
+        val_mask = np.invert(kernel.train_mask)
+
         if not custom_weights:
             if with_aux:
-                return train_y_all[train_mask], train_y_aux[train_mask]
+                return train_y_all[train_mask], train_y_aux[train_mask], train_y_all[val_mask], train_y_aux[val_mask]
             else:
-                return train_y_all[train_mask]
+                return train_y_all[train_mask], train_y_all[val_mask]
         else:
             # credit to https://www.kaggle.com/tanreinama/simple-lstm-using-identity-parameters-solution
             if sample_weights is None:
                 raise RuntimeError('sample weights cannot be None if use custom_weights')
             if with_aux:
-                return np.vstack([train_y_all, sample_weights]).T[train_mask], train_y_aux[train_mask]
+                return np.vstack([train_y_all, sample_weights]).T[train_mask], train_y_aux[train_mask], train_y_all[val_mask], train_y_aux[val_mask]
             else:
-                return np.vstack([train_y_all, sample_weights]).T[train_mask]
+                return np.vstack([train_y_all, sample_weights]).T[train_mask], train_y_all[val_mask]
+
+
+                val_X = kernel.train_X_all[val_mask]  # all with identity, (it looks like my test test... not right, all with identy ones)
+                val_y = kernel.train_y_all[val_mask]
+                val_y_aux = kernel.train_y_aux_all[val_mask]
 
     def res_subgroup(self, subgroup, y_pred):
         # first prepare the data
@@ -1359,7 +1370,7 @@ LEARNING_RATE_DECAY_PER_EPOCH = 0.5
 IDENTITY_RUN = False
 TARGET_RUN = "lstm"
 TARGET_RUN_READ_RESULT = False
-PRD_ONLY = True  # will not train the model
+PRD_ONLY = False  # will not train the model
 RESTART_TRAIN = False
 RESTART_TRAIN_RES = True
 RESTART_TRAIN_ID = False
@@ -1624,24 +1635,24 @@ def main(argv):
             else:
                 sample_weights = kernel.prepare_weight_for_subgroup_balance()
                 sample_weights_train = sample_weights[kernel.train_mask]
-                val_mask = np.invert(kernel.train_mask)
-                pickle.dump(val_mask, open("val_mask", 'wb'))  # only the ones with identity is predicted
+                #pickle.dump(val_mask, open("val_mask", 'wb'))  # only the ones with identity is predicted
 
                 train_X = kernel.train_X_all[kernel.train_mask]
+                val_X = kernel.train_X_all[np.invert(kernel.train_mask)]
                 train_y_aux = None
                 train_y = None
-                if WEIGHT_TO_Y and sample_weights is not None:
-                    if NO_AUX:
-                        train_y = kernel.prepare_train_labels(kernel.train_y_all, kernel.train_mask, custom_weights=True, with_aux=False, train_y_aux=None, sample_weights=sample_weights)
-                    else:
-                        train_y, train_y_aux = kernel.prepare_train_labels(kernel.train_y_all, kernel.train_mask, custom_weights=True, with_aux=True, train_y_aux=kernel.train_y_aux_all, sample_weights=sample_weights)
-                    sample_weights_train = None  # no need to use in fit, will cooperate to the custom loss function
-                else:
-                    train_y = kernel.train_y_all[kernel.train_mask]
-                    train_y_aux = kernel.train_y_aux_all[kernel.train_mask]
 
-                val_X = kernel.train_X_all[val_mask]  # all with identity, (it looks like my test test... not right, all with identy ones)
-                val_y = kernel.train_y_all[val_mask]
+                if NO_AUX:
+                    train_y, val_y = kernel.prepare_train_labels(kernel.train_y_all, kernel.train_mask, custom_weights=True, with_aux=False, train_y_aux=None, sample_weights=sample_weights)
+                else:
+                    train_y, train_y_aux, val_y, val_y_aux = \
+                        kernel.prepare_train_labels(kernel.train_y_all,
+                                                     kernel.train_mask,
+                                                     custom_weights=True,
+                                                     with_aux=True,
+                                                     train_y_aux=kernel.train_y_aux_all,
+                                                     sample_weights=sample_weights)
+                sample_weights_train = None  # no need to use in fit, will cooperate to the custom loss function
                 #logger.debug(val_X[:10])
                 preds = kernel.run_lstm_model(predict_ones_with_identity=True, final_train=FINAL_SUBMIT, params={
                     'prefix': prefix,
@@ -1651,6 +1662,7 @@ def main(argv):
                     'sample_weights': sample_weights_train,
                     'train_data': (train_X, train_y),   # train data with identities
                     'train_y_aux': train_y_aux,
+                    'val_y_aux': val_y_aux,
                     'val_data': (val_X, val_y),   # train data with identities
                     'patience': 2,
                 })  # only the val_mask ones is predicted TODO modify val set, to resemble test set
@@ -1702,7 +1714,7 @@ BALANCE_SCHEME_AUC = 'no_more_bp_sn'
 BALANCE_SCHEME_TARGET_SPLITS = 'no_target_bucket_extreme_positive'  # not work, because manual change will corrupt orignial information?
 
 WEIGHT_TO_Y = True
-FINAL_SUBMIT = False
+FINAL_SUBMIT = True
 
 if __name__ == '__main__':
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)
