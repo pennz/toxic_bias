@@ -37,7 +37,7 @@ LSTM_UNITS = 128
 DENSE_HIDDEN_UNITS = 4 * LSTM_UNITS
 RES_DENSE_HIDDEN_UNITS = 5
 
-EPOCHS = 8  # 4 seems good for current setting, more training will help for the final score?
+EPOCHS = 6  # 4 seems good for current setting, more training will help for the final score?
 
 from tensorflow.keras import initializers, regularizers, constraints
 
@@ -329,7 +329,9 @@ class KaggleKernel:
             pass
         else:  # keep record training parameters
             self.emb.dump_obj(f'Start run with FL_{FOCAL_LOSS}_{FOCAL_LOSS_GAMMA}_{ALPHA} lr {STARTER_LEARNING_RATE}, decay {LEARNING_RATE_DECAY_PER_EPOCH}, \
-BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN}', 'run_info', force=True)
+BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN}', 'run_info.txt', force=True)
+            self.emb.dump_obj(f'Start run with FL_{FOCAL_LOSS}_{FOCAL_LOSS_GAMMA}_{ALPHA} lr {STARTER_LEARNING_RATE}, decay {LEARNING_RATE_DECAY_PER_EPOCH}, \
+BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN}', 'run_info.txt', force=True)
 
         self.train_X_all, self.train_y_all, self.train_y_aux_all, self.to_predict_X_all, self.embedding_matrix = self.emb.data_prepare(
             action)
@@ -808,16 +810,14 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 
                 run_times += 1
             if final_train:
-                test_result = model.predict(self.to_predict_X_all, verbose=2)
+                test_result = np.array(model.predict(self.to_predict_X_all, verbose=2))
                 if NO_AUX:
                     test_preds += test_result
                 else:
-                    test_preds += np.array(test_result)[:, 0]
+                    test_preds += test_result[:, 0]
             elif train_test_split:
                 pred = model.predict(val_X, verbose=1, batch_size=BATCH_SIZE)
-                if not NO_AUX:
-                    pred = pred[:, 0]
-                return pred
+                return pred if NO_AUX else np.array(pred)[:, 0]
 
         test_preds /= run_times
         self.save_result(test_preds)
@@ -1232,7 +1232,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 
         logger.debug(f'Res update for {subgroup}, {len(idx_val)} items predicted by res model')
 
-        self.calculate_metrics_and_print(validate_df_with_preds=id_df, model_name=model_name, detail=detail)
+        self.calculate_metrics_and_print(validate_df_with_preds=id_df, model_name=model_name, detail=detail, file_for_print='metrics_log.txt')
 
     def run_bias_auc_model(self):
         """
@@ -1249,7 +1249,9 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         if self.identity_idx is None:
             self.train_X_identity, self.train_y_identity, self.identity_idx = self.emb.get_identity_train_data_df_idx()  # to train the identity
 
-    def calculate_metrics_and_print(self, preds=None, threshold=0.5, validate_df_with_preds=None, model_name='lstm', detail=True, benchmark_base=None):
+    def calculate_metrics_and_print(self, filename_for_print='metrics_log.txt', preds=None, threshold=0.5, validate_df_with_preds=None, model_name='lstm', detail=True, benchmark_base=None):
+        file_for_print = open(filename_for_print, 'w')
+
         self.emb.read_train_test(train_only=True)
         self.load_identity_data_idx()
         if benchmark_base is None:
@@ -1283,46 +1285,50 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         # logger.info(subgroup_distribution)
         if not detail:
             return
-        print("### subgroup auc")
+        print("### subgroup auc", file=file_for_print)
         for d0 in subgroup_distribution:
             g = d0['subgroup']
             m = 'subgroup_auc'
             s = 'subgroup_size'
             auc = "{0:.4} {1}".format(bias_metrics_df.loc[g][m], bias_metrics_df.loc[g][s])
-            print("{0:5.5} ".format(g) + auc + '\t' + str(d0[m][2]) + '\t' + str(d0[m][3]))
+            print("{0:5.5} ".format(g) + auc + '\t' + str(d0[m][2]) + '\t' + str(d0[m][3]), file=file_for_print)
 
-        print("### bpsn auc")
+        print("### bpsn auc", file=file_for_print)
         for d0 in subgroup_distribution:
             g = d0['subgroup']
             m = 'bpsn_auc'
             s = 'subgroup_size'
             auc = "{0:.4} {1}".format(bias_metrics_df.loc[g][m], bias_metrics_df.loc[g][s])
-            print("{0:5.5} ".format(g) + auc + '\t' + str(d0[m][2]) + '\t' + str(d0[m][3]))
+            print("{0:5.5} ".format(g) + auc + '\t' + str(d0[m][2]) + '\t' + str(d0[m][3]), file=file_for_print)
 
-        print("### bnsp auc")
+        print("### bnsp auc", file=file_for_print)
         for d0 in subgroup_distribution:
             g = d0['subgroup']
             m = 'bnsp_auc'
             s = 'subgroup_size'
             auc = "{0:.4} {1}".format(bias_metrics_df.loc[g][m], bias_metrics_df.loc[g][s])
-            print("{0:5.5} ".format(g) + auc + '\t' + str(d0[m][2]) + '\t' + str(d0[m][3]))
+            print("{0:5.5} ".format(g) + auc + '\t' + str(d0[m][2]) + '\t' + str(d0[m][3]), file=file_for_print)
 
-        print("### counts")
+        print("### counts", file=file_for_print)
         # length thing
         for d0 in subgroup_distribution:
             g = d0['subgroup']
             m = 'subgroup_auc'
             s = 'subgroup_size'
             auc = "{0:.4} {1}".format(bias_metrics_df.loc[g][m], bias_metrics_df.loc[g][s])
-            print("{0:5.5} ".format(g) + auc + '\t' + str(d0[m][0]) + '\t' + str(d0[m][1]))
+            print("{0:5.5} ".format(g) + auc + '\t' + str(d0[m][0]) + '\t' + str(d0[m][1]), file=file_for_print)
 
-        print("### overall")
+        print("### overall", file=file_for_print)
         g = 'overall'
         m = d.OVERALL_AUC
         s = 'subgroup_size'
         auc = "{0:.4} {1}".format(overall_distribution[m], overall_distribution[s])
         dist = overall_distribution['distribution']
-        print(f'{g:5.5} {auc}\tneg_tgt_pred_dis:{dist[2]}\tpos_tgt_pred_dis:{dist[3]}\noverall_pos_neg_cnt:\t{dist[0]}')
+        print(f'{g:5.5} {auc}\tneg_tgt_pred_dis:{dist[2]}\tpos_tgt_pred_dis:{dist[3]}\noverall_pos_neg_cnt:\t{dist[0]}', file=file_for_print)
+
+        file_for_print.close()
+        file_for_print = open(filename_for_print, 'r')
+        print(file_for_print.read())
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--batch_size', default=32, type=int, help='batch size')
@@ -1345,7 +1351,7 @@ LEARNING_RATE_DECAY_PER_EPOCH = 0.5
 IDENTITY_RUN = False
 TARGET_RUN = "lstm"
 TARGET_RUN_READ_RESULT = False
-PRD_ONLY = True
+PRD_ONLY = False
 RESTART_TRAIN = False
 RESTART_TRAIN_RES = True
 RESTART_TRAIN_ID = False
@@ -1691,7 +1697,7 @@ BALANCE_SCHEME_AUC = 'more_bp_sn'
 BALANCE_SCHEME_TARGET_SPLITS = 'no_target_bucket_extreme_positive'  # not work, because manual change will corrupt orignial information?
 
 WEIGHT_TO_Y = True
-FINAL_SUBMIT = True
+FINAL_SUBMIT = False
 
 if __name__ == '__main__':
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)
