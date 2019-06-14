@@ -37,7 +37,7 @@ LSTM_UNITS = 128
 DENSE_HIDDEN_UNITS = 4 * LSTM_UNITS
 RES_DENSE_HIDDEN_UNITS = 5
 
-EPOCHS = 1  # 4 seems good for current setting, more training will help for the final score?
+EPOCHS = 6  # 4 seems good for current setting, more training will help for the final score?
 
 from tensorflow.keras import initializers, regularizers, constraints
 
@@ -778,12 +778,12 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                 pass
 
             # data thing
-            if NO_AUX:
-                y_train = train_y[tr_ind]
-                y_val = train_y[val_ind]
-            else:
-                y_train = [train_y[tr_ind], train_y_aux[tr_ind]]
-                y_val = [train_y[val_ind], train_y_aux[val_ind]]
+            #if NO_AUX:
+            #    y_train = train_y[tr_ind]
+            #    y_val = train_y[val_ind]
+            #else:
+            #    y_train = [train_y[tr_ind], train_y_aux[tr_ind]]
+            #    y_val = [train_y[val_ind], train_y_aux[val_ind]]
 
             if not predict_only:
                 prog_bar_logger = NBatchProgBarLogger(display_per_batches=int(1600000 / 20 / BATCH_SIZE), early_stop=True,
@@ -1715,6 +1715,9 @@ BALANCE_SCHEME_TARGET_SPLITS = 'no_target_bucket_extreme_positive'  # not work, 
 
 WEIGHT_TO_Y = True
 FINAL_SUBMIT = True
+if FINAL_SUBMIT:
+    PRD_ONLY = False
+    TARGET_RUN = "lstm"
 
 if __name__ == '__main__':
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)
