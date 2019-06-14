@@ -745,12 +745,17 @@ class EmbeddingHandler:
             try:
                 self.train_df = pd.read_csv(self.INPUT_DATA_DIR + 'train.csv')
             except FileNotFoundError:
-                if not os.path.isdir(self.INPUT_DATA_DIR):
-                    self.INPUT_DATA_DIR = '/home/pengyu/works/input/jigsaw-unintended-bias-in-toxicity-classification/'
-                if not os.path.isdir(self.INPUT_DATA_DIR):
-                    self.INPUT_DATA_DIR = self.BIN_FOLDER
-                if not os.path.isdir(self.INPUT_DATA_DIR):
-                    self.INPUT_DATA_DIR = '/content/gdrivedata/My Drive/'
+                INPUT_DATA_DIR = '/home/pengyu/works/input/jigsaw-unintended-bias-in-toxicity-classification/'
+                if os.path.isfile(INPUT_DATA_DIR + 'train.csv'):
+                    self.INPUT_DATA_DIR = INPUT_DATA_DIR
+
+                INPUT_DATA_DIR = self.BIN_FOLDER
+                if os.path.isfile(INPUT_DATA_DIR + 'train.csv'):
+                    self.INPUT_DATA_DIR = INPUT_DATA_DIR
+
+                INPUT_DATA_DIR = '/content/gdrivedata/My Drive/'
+                if os.path.isfile(INPUT_DATA_DIR + 'train.csv'):
+                    self.INPUT_DATA_DIR = INPUT_DATA_DIR
 
                 self.train_df = pd.read_csv(self.INPUT_DATA_DIR + 'train.csv')
         if not train_only:

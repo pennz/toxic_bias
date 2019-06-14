@@ -346,8 +346,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                 mask = np.ones(len(self.train_X_all), np.bool)
                 mask[self.identity_idx] = 0  # identities data excluded first ( will add some back later)
 
-                # need get more 80, 000 normal ones without identities, 40,0000 %40 with identities
-
+                # need get more 80, 000 normal ones without identities, 40,0000 %40 with identities, 4*0.4/12, 0.4/3 13%
                 add_no_identity_to_val = self.train_df[mask].sample(n=int(8e4))
                 add_no_identity_to_val_idx = add_no_identity_to_val.index
                 mask[add_no_identity_to_val_idx] = 0  # exclude from train, add to val
@@ -1027,7 +1026,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
     def get_identities_for_training(self):
         if not self.id_used_in_train:
             if not FINAL_SUBMIT:
-                logger.debug("Use 80% identity data")  # in test set, around 10% data will be with identities (lower than training set)
+                logger.debug("Use 90% identity data")  # in test set, around 10% data will be with identities (lower than training set)
                 id_df = self.train_df.loc[self.identity_idx]
                 id_train_df = id_df.sample(frac=0.9)  # 40,000 remained for val
                 id_train_df_idx = id_train_df.index
@@ -1089,6 +1088,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                         split_idx_in_df = v[target_split_idx][3]  # [3] is the index
                         gs_weights[g][split_idx_in_df] *= ratio
 
+            set_trace()
             if balance_scheme_across_subgroups == 'more_for_low_score':  # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
                 subgroup_weights = {}
                 subgroup_weights['homosexual_gay_or_lesbian'] = 4
@@ -1104,7 +1104,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                     subgroup_dist = gs[g]
                     for dstr in subgroup_dist:
                         split_idx_in_df = dstr[3]
-                        gs_weights[g][split_idx_in_df] *= subgroup_weights[g]
+                        gs_weights[g][split_idx_in_df] *= subgroup_weights[g] # the ones with identities will be added
 
             weights_changer = np.transpose([v for v in gs_weights.values()])  # shape will be [sample nubmers , subgroups] as some sample might be in two groups
             weights_changer_max = np.amax(weights_changer, axis=1)
@@ -1359,8 +1359,8 @@ LEARNING_RATE_DECAY_PER_EPOCH = 0.5
 IDENTITY_RUN = False
 TARGET_RUN = "lstm"
 TARGET_RUN_READ_RESULT = False
-PRD_ONLY = False  # will not train the model
-RESTART_TRAIN = True
+PRD_ONLY = True  # will not train the model
+RESTART_TRAIN = False
 RESTART_TRAIN_RES = True
 RESTART_TRAIN_ID = False
 
