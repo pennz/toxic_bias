@@ -324,6 +324,8 @@ class KaggleKernel:
     def load_data(self, action):
         if self.emb is None:
             self.emb = d.EmbeddingHandler()
+        self.emb.read_train_test(train_only=False)
+        self.train_df = self.emb.train_df
 
         if PRD_ONLY or TARGET_RUN_READ_RESULT or ANA_RESULT:
             pass
@@ -342,7 +344,13 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             if action == TRAIN_DATA_EXCLUDE_IDENDITY_ONES:
                 self.load_identity_data_idx()
                 mask = np.ones(len(self.train_X_all), np.bool)
-                mask[self.identity_idx] = 0  # reverse indexing
+                mask[self.identity_idx] = 0  # identities data excluded first ( will add some back later)
+
+                # need get more 80, 000 normal ones without identities, 40,0000 %40 with identities
+
+                add_no_identity_to_val = self.train_df[mask].sample(n=int(8e4))
+                add_no_identity_to_val_idx = add_no_identity_to_val.index
+                mask[add_no_identity_to_val_idx] = 0  # exclude from train, add to val
 
                 self.train_mask = mask
 
@@ -679,7 +687,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         # line. we need to find the ML line
         return model
 
-    def run_lstm_model(self, final_train=False, n_splits=5, predict_ones_with_identity=True, train_test_split=True,
+    def run_lstm_model(self, final_train=False, n_splits=2, predict_ones_with_identity=True, train_test_split=True,
                        params=None):
         # checkpoint_predictions = []
         # weights = []
@@ -721,11 +729,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 
         run_times = 0
         for fold in range(n_splits):
-
-            if DEBUG:
-                K.set_session(tf_debug.LocalCLIDebugWrapperSession(tf.Session()))
-            else:
-                K.clear_session()  # so it will start over
+            K.clear_session()  # so it will start over
             tr_ind, val_ind = splits[fold]
 
             if NO_AUX:
@@ -766,8 +770,9 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                 logger.debug('restore from the model file {} -> done'.format(h5_file))
 
             if self.embedding_matrix is not None:
-                del self.embedding_matrix
-                gc.collect()
+                #del self.embedding_matrix
+                #gc.collect()
+                pass
 
             # data thing
             if NO_AUX:
@@ -810,14 +815,17 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 
                 run_times += 1
             if final_train:
-                test_result = np.array(model.predict(self.to_predict_X_all, verbose=2))
+                test_result = model.predict(self.to_predict_X_all, verbose=2)
                 if NO_AUX:
-                    test_preds += test_result
+                    test_preds += np.array(test_result).ravel()
                 else:
-                    test_preds += test_result[:, 0]
+                    test_preds += np.array(test_result[0]).ravel()  # the shape of preds, is [0] is the predict,[1] for aux
             elif train_test_split:
                 pred = model.predict(val_X, verbose=1, batch_size=BATCH_SIZE)
-                return pred if NO_AUX else np.array(pred)[:, 0]
+                if not NO_AUX:
+                    return np.array(pred[0]).ravel()
+                else:
+                    return np.array(pred).ravel()
 
         test_preds /= run_times
         self.save_result(test_preds)
@@ -1021,7 +1029,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             if not FINAL_SUBMIT:
                 logger.debug("Use 80% identity data")  # in test set, around 10% data will be with identities (lower than training set)
                 id_df = self.train_df.loc[self.identity_idx]
-                id_train_df = id_df.sample(frac=0.8)
+                id_train_df = id_df.sample(frac=0.9)  # 40,000 remained for val
                 id_train_df_idx = id_train_df.index
             else:
                 logger.debug("Use 100% identity data")  # in test set, around 10% data will be with identities (lower than training set)
@@ -1351,8 +1359,8 @@ LEARNING_RATE_DECAY_PER_EPOCH = 0.5
 IDENTITY_RUN = False
 TARGET_RUN = "lstm"
 TARGET_RUN_READ_RESULT = False
-PRD_ONLY = True
-RESTART_TRAIN = False
+PRD_ONLY = False  # will not train the model
+RESTART_TRAIN = True
 RESTART_TRAIN_RES = True
 RESTART_TRAIN_ID = False
 
@@ -1362,7 +1370,7 @@ Y_TRAIN_BIN = False  # with True, slightly worse
 FOCAL_LOSS = True
 
 FOCAL_LOSS_GAMMA = 0.
-ALPHA = 0.7
+ALPHA = 0.91
 
 #FOCAL_LOSS_GAMMA = 2.
 #ALPHA = 0.666
@@ -1608,9 +1616,6 @@ def main(argv):
 
     elif TARGET_RUN == 'lstm':
         predict_only = PRD_ONLY
-
-        kernel.train_df = kernel.emb.train_df
-
         if not TARGET_RUN_READ_RESULT:
             if ANA_RESULT:
                 #preds = pickle.load(open('predicts', 'rb'))
@@ -1692,7 +1697,7 @@ id_preds = {}
 
 BALANCE_SCHEME_SUBGROUPS = 'target_bucket_same_for_subgroups' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
 BALANCE_SCHEME_ACROSS_SUBGROUPS = 'more_for_low_score'  # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
-BALANCE_SCHEME_AUC = 'more_bp_sn'
+BALANCE_SCHEME_AUC = 'no_more_bp_sn'
 #balance_scheme_target_splits = 'target_bucket_same_for_target_splits' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
 BALANCE_SCHEME_TARGET_SPLITS = 'no_target_bucket_extreme_positive'  # not work, because manual change will corrupt orignial information?
 
