@@ -1,4 +1,9 @@
 # data comprehension
+## more data !
+
+Classification of political social media: Social media messages from politicians classified by content. (4 MB)
+
+https://github.com/niderhoff/nlp-datasets
 ## target
 target means toxic or not
 

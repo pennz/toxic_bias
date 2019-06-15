@@ -37,7 +37,7 @@ LSTM_UNITS = 128
 DENSE_HIDDEN_UNITS = 4 * LSTM_UNITS
 RES_DENSE_HIDDEN_UNITS = 5
 
-EPOCHS = 6  # 4 seems good for current setting, more training will help for the final score?
+EPOCHS = 7  # 4 seems good for current setting, more training will help for the final score?
 
 from tensorflow.keras import initializers, regularizers, constraints
 
@@ -296,6 +296,24 @@ class NBatchProgBarLogger(tf.keras.callbacks.ProgbarLogger):
         if self.stopped_step > 0 and self.verbose > 0:
             print('Step %05d: early stopping' % (self.stopped_step + 1))
 
+# refer to https://github.com/keras-team/keras/issues/341
+def reinitLayers(model):
+    session = K.get_session()
+    for layer in model.layers:
+        #if isinstance(layer, keras.engine.topology.Container):
+        if isinstance(layer, tf.keras.Model):
+            reinitLayers(layer)
+            continue
+        print("LAYER::", layer.name)
+        if layer.trainable == False:
+            continue
+        for v in layer.__dict__:
+            v_arg = getattr(layer, v)
+            if hasattr(v_arg,'initializer'):  # not work for layer wrapper, like Bidirectional
+                initializer_method = getattr(v_arg, 'initializer')
+                if DEBUG: set_trace()
+                initializer_method.run(session=session)
+                print('reinitializing layer {}.{}'.format(layer.name, v))
 
 
 class KaggleKernel:
@@ -312,6 +330,7 @@ class KaggleKernel:
         self.train_X_identity = None
         #self.to_predict_X = None
         self.embedding_matrix = None
+        self.embedding_layer = None
         self.identity_idx = None
         self.id_used_in_train = False
         self.id_validate_df = None
@@ -332,31 +351,29 @@ class KaggleKernel:
         else:  # keep record training parameters
             self.emb.dump_obj(f'Start run with FL_{FOCAL_LOSS}_{FOCAL_LOSS_GAMMA}_{ALPHA} lr {STARTER_LEARNING_RATE}, decay {LEARNING_RATE_DECAY_PER_EPOCH}, \
 BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN}', 'run_info.txt', force=True)
-            self.emb.dump_obj(f'Start run with FL_{FOCAL_LOSS}_{FOCAL_LOSS_GAMMA}_{ALPHA} lr {STARTER_LEARNING_RATE}, decay {LEARNING_RATE_DECAY_PER_EPOCH}, \
-BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_TRAIN_BIN {Y_TRAIN_BIN}', 'run_info.txt', force=True)
 
         self.train_X_all, self.train_y_all, self.train_y_aux_all, self.to_predict_X_all, self.embedding_matrix = self.emb.data_prepare(
             action)
         if Y_TRAIN_BIN:
             self.train_y_float_backup = self.train_y
             self.train_y = np.where(self.train_y > 0.5, True, False)
-        if action is not None:
-            if action == TRAIN_DATA_EXCLUDE_IDENDITY_ONES:
-                self.load_identity_data_idx()
-                mask = np.ones(len(self.train_X_all), np.bool)
-                mask[self.identity_idx] = 0  # identities data excluded first ( will add some back later)
+        #if action is not None:
+        #    if action == TRAIN_DATA_EXCLUDE_IDENDITY_ONES:
+        self.load_identity_data_idx()
+        mask = np.ones(len(self.train_X_all), np.bool)
+        mask[self.identity_idx] = 0  # identities data excluded first ( will add some back later)
 
-                # need get more 80, 000 normal ones without identities, 40,0000 %40 with identities, 4*0.4/12, 0.4/3 13%
-                add_no_identity_to_val = self.train_df[mask].sample(n=int(8e4))
-                add_no_identity_to_val_idx = add_no_identity_to_val.index
-                mask[add_no_identity_to_val_idx] = 0  # exclude from train, add to val
+        # need get more 80, 000 normal ones without identities, 40,0000 %40 with identities, 4*0.4/12, 0.4/3 13%
+        add_no_identity_to_val = self.train_df[mask].sample(n=int(8e4))
+        add_no_identity_to_val_idx = add_no_identity_to_val.index
+        mask[add_no_identity_to_val_idx] = 0  # exclude from train, add to val
 
-                self.train_mask = mask
+        self.train_mask = mask
 
-                self.train_X = self.train_X_all[mask]
-                self.train_y = self.train_y_all[mask]
-                self.train_y_aux = self.train_y_aux_all[mask]
-                logger.debug("Train data no identity ones now")
+        self.train_X = self.train_X_all[mask]
+        self.train_y = self.train_y_all[mask]
+        self.train_y_aux = self.train_y_aux_all[mask]
+        logger.debug("Train data no identity ones now")
 
         try:
             if self.emb.do_emb_matrix_preparation:
@@ -582,7 +599,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             logger.info(f'for {subgroup}, predict_sensitivity is {s}')
 
             predict_file_name = f'{prefix}_{subgroup}_pred.pkl'
-            global  id_preds
+            id_preds = {}
             id_preds[subgroup] = identity_predict
             pickle.dump(identity_predict, open(predict_file_name, 'wb'))
         else:  # only predict for test
@@ -593,7 +610,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             # self.oof_preds[val_ind] += pred
         #pickle.dump(self.oof_preds, open(prefix + "predicts", 'wb'))
 
-    def build_lstm_model_customed(self, num_aux_targets, with_aux=False, loss='binary_crossentropy', metrics=None,
+    def build_lstm_model_customed(self, num_aux_targets, embedding_matrix, embedding_layer=None, with_aux=False, loss='binary_crossentropy', metrics=None,
                                   hidden_act='relu', with_BN=False):
         """build lstm model, non-binarized
 
@@ -609,7 +626,10 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             raise RuntimeError('aux features numbers invalid when aux enabled')
 
         words = Input(shape=(d.MAX_LEN,))  # (None, 180)
-        x = Embedding(*self.embedding_matrix.shape, weights=[self.embedding_matrix], trainable=False)(words)
+        if embedding_layer is not None:
+            x = embedding_layer(words)
+        else:
+            x = Embedding(*embedding_matrix.shape, weights=[embedding_matrix], trainable=False)(words)
 
         x = SpatialDropout1D(0.2)(x)
         x = Bidirectional(CuDNNLSTM(LSTM_UNITS, return_sequences=True))(x)
@@ -686,8 +706,8 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         # line. we need to find the ML line
         return model
 
-    def run_lstm_model(self, final_train=False, n_splits=2, predict_ones_with_identity=True, train_test_split=True,
-                       params=None):
+    def run_lstm_model(self, final_train=False, n_splits=2, predict_ones_with_identity=True,
+                       params=None, val_mask=None):
         # checkpoint_predictions = []
         # weights = []
         splits = list(KFold(n_splits=n_splits, random_state=2019, shuffle=True).split(
@@ -730,60 +750,51 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         prefix += 'G{:.1f}'.format(FOCAL_LOSS_GAMMA)
 
 
+        if self.embedding_layer is None:
+            self.embedding_layer = Embedding(*self.embedding_matrix.shape, weights=[self.embedding_matrix], trainable=False)
+
+            del self.embedding_matrix
+            gc.collect()
+
+        # build one time, then reset if needed
+        if NO_AUX:
+            h5_file = prefix + '_attention_lstm_NOAUX_' + f'.hdf5'  # we could load with file name, then remove and save to new one
+        else:
+            h5_file = prefix + '_attention_lstm_' + f'.hdf5'  # we could load with file name, then remove and save to new one
+
+        starter_lr = params.get('starter_lr', STARTER_LEARNING_RATE)
+        # model thing
+        if re_train or not os.path.isfile(h5_file):
+            if NO_AUX:
+                if FOCAL_LOSS:
+                    model = self.build_lstm_model_customed(0, None, self.embedding_layer, with_aux=False,
+                                                           loss=binary_crossentropy_with_focal, metrics=[binary_crossentropy, mean_absolute_error,])
+                else:
+                    model = self.build_lstm_model_customed(0, None, self.embedding_layer, with_aux=False,
+                                                           metrics=[ mean_absolute_error,])
+            else:
+                model = self.build_lstm_model_customed(len(self.train_y_aux[0]), None, self.embedding_layer,
+                                                       with_aux=True,
+                                                       loss=binary_crossentropy_with_focal,
+                                                       metrics=[binary_crossentropy, mean_absolute_error])
+            self.model = model
+            logger.info('build model -> done')
+
+        else:
+            model = load_model(h5_file, custom_objects={'binary_crossentropy_with_focal': binary_crossentropy_with_focal, 'AttentionRaffel':AttentionRaffel})
+            starter_lr = starter_lr * LEARNING_RATE_DECAY_PER_EPOCH ** (EPOCHS)
+            self.model = model
+            logger.debug('restore from the model file {} -> done'.format(h5_file))
+
         run_times = 0
         for fold in range(n_splits):
-            K.clear_session()  # so it will start over
-            tr_ind, val_ind = splits[fold]
-
-            if NO_AUX:
-                h5_file = prefix + '_attention_lstm_NOAUX_' + f'{fold}.hdf5'  # we could load with file name, then remove and save to new one
-            else:
-                h5_file = prefix + '_attention_lstm_' + f'{fold}.hdf5'  # we could load with file name, then remove and save to new one
+            #K.clear_session()  # so it will start over
+            if fold > 0:
+                reinitLayers(model)
+                starter_lr = starter_lr / 8  # as lstm won't be re-initialized
 
             ckpt = ModelCheckpoint(h5_file, save_best_only=True, verbose=1)
             early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=patience, restore_best_weights=True)
-
-            starter_lr = params.get('starter_lr', STARTER_LEARNING_RATE)
-            # model thing
-            if re_train or not os.path.isfile(h5_file):
-                if NO_AUX:
-                    if FOCAL_LOSS:
-                        model = self.build_lstm_model_customed(0, with_aux=False,
-                               loss=binary_crossentropy_with_focal, metrics=[binary_crossentropy, mean_absolute_error,])
-                    else:
-                        model = self.build_lstm_model_customed(0, with_aux=False,
-                        metrics=[#tf.keras.metrics.Precision(), tf.keras.metrics.Recall(), tf.keras.metrics.SpecificityAtSensitivity(0.50),
-                            mean_absolute_error,])
-                            #tf.keras.metrics.SensitivityAtSpecificity(0.9, name='sn_90'),
-                            #tf.keras.metrics.SensitivityAtSpecificity(0.95, name='sn_95'),
-                            #tf.keras.metrics.SpecificityAtSensitivity(0.90, name="sp_90"),
-                            #tf.keras.metrics.SpecificityAtSensitivity(0.95, name="sp_95"),])
-                else:
-                    model = self.build_lstm_model_customed(len(self.train_y_aux[0]),
-                                                           with_aux=True,
-                                                           loss=binary_crossentropy_with_focal,
-                                                           metrics=[binary_crossentropy, mean_absolute_error])
-                self.model = model
-                logger.info('build model -> done')
-
-            else:
-                model = load_model(h5_file, custom_objects={'binary_crossentropy_with_focal': binary_crossentropy_with_focal, 'AttentionRaffel':AttentionRaffel})
-                starter_lr = starter_lr * LEARNING_RATE_DECAY_PER_EPOCH ** (EPOCHS)
-                self.model = model
-                logger.debug('restore from the model file {} -> done'.format(h5_file))
-
-            if self.embedding_matrix is not None:
-                #del self.embedding_matrix
-                #gc.collect()
-                pass
-
-            # data thing
-            #if NO_AUX:
-            #    y_train = train_y[tr_ind]
-            #    y_val = train_y[val_ind]
-            #else:
-            #    y_train = [train_y[tr_ind], train_y_aux[tr_ind]]
-            #    y_val = [train_y[val_ind], train_y_aux[val_ind]]
 
             if not predict_only:
                 prog_bar_logger = NBatchProgBarLogger(display_per_batches=int(1600000 / 20 / BATCH_SIZE), early_stop=True,
@@ -818,21 +829,29 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                           ])
 
                 run_times += 1
-            if final_train:
-                test_result = model.predict(self.to_predict_X_all, verbose=2)
+            if not NOT_PRD:
+                #if final_train:
+                test_result = model.predict(self.to_predict_X_all, verbose=1)
                 if NO_AUX:
                     test_preds += np.array(test_result).ravel()
                 else:
                     test_preds += np.array(test_result[0]).ravel()  # the shape of preds, is [0] is the predict,[1] for aux
-            elif train_test_split:
+
+                test_preds_avg = test_preds / run_times
+                self.save_result(test_preds_avg)  # save everything in case failed in some folds
+
+                #elif train_test_split:
                 pred = model.predict(val_X, verbose=1, batch_size=BATCH_SIZE)
                 if not NO_AUX:
-                    return np.array(pred[0]).ravel()
+                    preds = np.array(pred[0]).ravel()
                 else:
-                    return np.array(pred).ravel()
+                    preds = np.array(pred).ravel()
 
-        test_preds /= run_times
-        self.save_result(test_preds)
+                self.train_df.loc[val_mask, 'lstm'] = preds
+                self.calculate_metrics_and_print(filename_for_print=f'metrics_log_{run_times}.txt', validate_df_with_preds=kernel.train_df[val_mask], benchmark_base=kernel.train_df[val_mask])
+
+#        test_preds /= run_times
+#        self.save_result(test_preds)
 
     def save_result(self, predictions):
         if self.emb.test_df_id is None:
@@ -1300,17 +1319,22 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         # subgroup_distribution = pickle.load(open("subgroup_dist", 'rb'))  # only the ones with identity is predicted
 
         logger.info(f'final metric: {value} for threshold {threshold} applied to \'{d.TARGET_COLUMN}\' column, ')
-        logger.info("\n{}".format(bias_metrics[['subgroup', 'subgroup_auc', 'bnsp_auc', 'bpsn_auc']]))
+        logger.info("\n{}".format(bias_metrics[['subgroup_auc', 'bpsn_auc', 'bnsp_auc']]))
         # logger.info(subgroup_distribution)
         if not detail:
             return
         print("### subgroup auc", file=file_for_print)
+
+        def d_str(t):
+            num, mean, std = t
+            return f'{num}, {mean:.4}, {std:.4}'
+
         for d0 in subgroup_distribution:
             g = d0['subgroup']
             m = 'subgroup_auc'
             s = 'subgroup_size'
-            auc = "{0:.4} {1}".format(bias_metrics_df.loc[g][m], bias_metrics_df.loc[g][s])
-            print("{0:5.5} ".format(g) + auc + '\t' + str(d0[m][2]) + '\t' + str(d0[m][3]), file=file_for_print)
+            auc = "{:.4} {}".format(bias_metrics_df.loc[g][m], bias_metrics_df.loc[g][s])
+            print("{:5.5} ".format(g) + auc + '\t' + d_str(d0[m][2]) + '\t' + d_str(d0[m][3]) + '\t' + d_str(d0[m][4]) + '\t' + d_str(d0[m][5]), file=file_for_print)
 
         print("### bpsn auc", file=file_for_print)
         for d0 in subgroup_distribution:
@@ -1318,7 +1342,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             m = 'bpsn_auc'
             s = 'subgroup_size'
             auc = "{0:.4} {1}".format(bias_metrics_df.loc[g][m], bias_metrics_df.loc[g][s])
-            print("{0:5.5} ".format(g) + auc + '\t' + str(d0[m][2]) + '\t' + str(d0[m][3]), file=file_for_print)
+            print("{0:5.5} ".format(g) + auc + '\t' + d_str(d0[m][2]) + '\t' + d_str(d0[m][3]), file=file_for_print)
 
         print("### bnsp auc", file=file_for_print)
         for d0 in subgroup_distribution:
@@ -1326,7 +1350,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             m = 'bnsp_auc'
             s = 'subgroup_size'
             auc = "{0:.4} {1}".format(bias_metrics_df.loc[g][m], bias_metrics_df.loc[g][s])
-            print("{0:5.5} ".format(g) + auc + '\t' + str(d0[m][2]) + '\t' + str(d0[m][3]), file=file_for_print)
+            print("{0:5.5} ".format(g) + auc + '\t' + d_str(d0[m][2]) + '\t' + d_str(d0[m][3]), file=file_for_print)
 
         print("### counts", file=file_for_print)
         # length thing
@@ -1343,7 +1367,8 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         s = 'subgroup_size'
         auc = "{0:.4} {1}".format(overall_distribution[m], overall_distribution[s])
         dist = overall_distribution['distribution']
-        print(f'{g:5.5} {auc}\tneg_tgt_pred_dis:{dist[2]}\tpos_tgt_pred_dis:{dist[3]}\noverall_pos_neg_cnt:\t{dist[0]}', file=file_for_print)
+        print(f'{g:5.5} {auc}\tneg_tgt_pred_dis:{d_str(dist[2])}\tpos_tgt_pred_dis:{d_str(dist[3])}\noverall_pos_neg_cnt:\t{dist[0]}', file=file_for_print)
+        print(f'{g:5.5} {auc}\tneg_tgt_act_dis:{d_str(dist[4])}\tpos_tgt_act_dis:{d_str(dist[5])}', file=file_for_print)
 
         file_for_print.close()
         file_for_print = open(filename_for_print, 'r')
@@ -1370,7 +1395,6 @@ LEARNING_RATE_DECAY_PER_EPOCH = 0.5
 IDENTITY_RUN = False
 TARGET_RUN = "lstm"
 TARGET_RUN_READ_RESULT = False
-PRD_ONLY = False  # will not train the model
 RESTART_TRAIN = False
 RESTART_TRAIN_RES = True
 RESTART_TRAIN_ID = False
@@ -1575,8 +1599,11 @@ def main(argv):
             action = TRAIN_DATA_EXCLUDE_IDENDITY_ONES
     #if not (RESTART_TRAIN or RESTART_TRAIN_ID or RESTART_TRAIN_RES):
     #    action = DATA_ACTION_NO_NEED_LOAD_EMB_M  # loading model from h5 file, no need load emb matrix (save memory)
-    kernel = KaggleKernel(action=action)
-    logger.debug(action)
+    if FINAL_SUBMIT:
+        kernel = KaggleKernel(action=None)
+    else:
+        kernel = KaggleKernel(action=action)
+        logger.debug(action)
     kernel.load_identity_data_idx()  # so only predict part of the data
 
     logger.info("load data done")
@@ -1614,13 +1641,10 @@ def main(argv):
                     'continue_train': False,  # just predict, do not train this time
                 })
 
-        set_trace()
         return
 
     if TARGET_RUN == 'res':
         # if not os.path.isfile('predicts'):
-        if DEBUG: global preds
-
         preds = pickle.load(open('predicts', 'rb'))
         kernel.calculate_metrics_and_print(preds)
         kernel.res_subgroup('white', preds)  # improve the model with another data input,
@@ -1636,9 +1660,10 @@ def main(argv):
                 sample_weights = kernel.prepare_weight_for_subgroup_balance()
                 sample_weights_train = sample_weights[kernel.train_mask]
                 #pickle.dump(val_mask, open("val_mask", 'wb'))  # only the ones with identity is predicted
+                val_mask = np.invert(kernel.train_mask)
 
                 train_X = kernel.train_X_all[kernel.train_mask]
-                val_X = kernel.train_X_all[np.invert(kernel.train_mask)]
+                val_X = kernel.train_X_all[val_mask]
                 train_y_aux = None
                 train_y = None
 
@@ -1664,18 +1689,15 @@ def main(argv):
                     'train_y_aux': train_y_aux,
                     'val_y_aux': val_y_aux,
                     'val_data': (val_X, val_y),   # train data with identities
-                    'patience': 2,
-                })  # only the val_mask ones is predicted TODO modify val set, to resemble test set
+                    'patience': 1,
+                },
+                                              val_mask=val_mask)  # only the val_mask ones is predicted TODO modify val set, to resemble test set
+                #if not FINAL_SUBMIT:  # we still need to check this ... for evalutate our model
         else:
             preds, val_mask = pickle.load(open('pred_val_mask', 'rb'))
 
         # else:
         #    preds = pickle.load(open('predicts', 'rb'))
-        if not FINAL_SUBMIT:
-            kernel.train_df.loc[val_mask, 'lstm'] = preds
-            kernel.calculate_metrics_and_print(validate_df_with_preds=kernel.train_df[val_mask], benchmark_base=kernel.train_df[val_mask])
-            pd.options.display.float_format = '{:,.2f}'.format
-            pd.options.display.max_colwidth = 140
         # df[df.white & (df.target_orig<0.5) & (df.lstm > 0.5)][['comment_text','lstm','target_orig']].head()
         #kernel.evaluate_model_and_print(preds, 0.55)
 
@@ -1695,6 +1717,28 @@ def main(argv):
     # })
     return
 
+
+
+BALANCE_SCHEME_SUBGROUPS = 'target_bucket_same_for_subgroups' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
+BALANCE_SCHEME_ACROSS_SUBGROUPS = 'more_for_low_score'  # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
+BALANCE_SCHEME_AUC = 'no_more_bp_sn'
+#balance_scheme_target_splits = 'target_bucket_same_for_target_splits' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
+BALANCE_SCHEME_TARGET_SPLITS = 'no_target_bucket_extreme_positive'  # not work, because manual change will corrupt orignial information?
+
+WEIGHT_TO_Y = True
+
+
+PRD_ONLY = True  # will not train the model
+NOT_PRD = True
+FINAL_SUBMIT = True
+if FINAL_SUBMIT:
+    DEBUG = False
+    TARGET_RUN = "lstm"
+    EPOCHS = 6
+    PRD_ONLY = False
+    NOT_PRD = False
+
+
 ANA_RESULT = False
 if os.path.isfile('.ana_result'):
     ANA_RESULT = True
@@ -1704,20 +1748,6 @@ if os.path.isfile('.ana_result'):
     TARGET_RUN = "lstm"
     PRD_ONLY = False
     RESTART_TRAIN_RES = False
-
-id_preds = {}
-
-BALANCE_SCHEME_SUBGROUPS = 'target_bucket_same_for_subgroups' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
-BALANCE_SCHEME_ACROSS_SUBGROUPS = 'more_for_low_score'  # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
-BALANCE_SCHEME_AUC = 'no_more_bp_sn'
-#balance_scheme_target_splits = 'target_bucket_same_for_target_splits' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
-BALANCE_SCHEME_TARGET_SPLITS = 'no_target_bucket_extreme_positive'  # not work, because manual change will corrupt orignial information?
-
-WEIGHT_TO_Y = True
-FINAL_SUBMIT = True
-if FINAL_SUBMIT:
-    PRD_ONLY = False
-    TARGET_RUN = "lstm"
 
 if __name__ == '__main__':
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)

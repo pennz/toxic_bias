@@ -29,7 +29,6 @@ IDENTITY_COLUMNS = [
 AUX_COLUMNS = ['severe_toxicity', 'obscene', 'identity_attack', 'insult', 'threat', 'sexual_explicit']
 TEXT_COLUMN = 'comment_text'
 TARGET_COLUMN = 'target'
-TOXICITY_COLUMN = TARGET_COLUMN
 # CHARS_TO_REMOVE = '!"#$%&()*+,-./:;<=>?@[\\]^_`{|}~\t\n“”’\'∞θ÷α•à−β∅³π‘₹´°£€\×™√²—'
 DATA_FILE_FLAG = '.tf_record_saved'
 
@@ -218,7 +217,7 @@ class BiasBenchmark:
     def __init__(self, train_df_id_na_dropped, threshold=0.5):
         # we can use this to divide subgroups(beside, we need to calculate only the 45000, with identities
         self.threshold = threshold
-        self.validate_df = BiasBenchmark.copy_convert_dataframe_to_bool(train_df_id_na_dropped[IDENTITY_COLUMNS + [TOXICITY_COLUMN, TEXT_COLUMN]], threshold)
+        self.validate_df = BiasBenchmark.copy_convert_dataframe_to_bool(train_df_id_na_dropped[IDENTITY_COLUMNS + [TARGET_COLUMN, TEXT_COLUMN]], threshold)
 
     @staticmethod
     def compute_auc(y_true, y_pred):
@@ -228,7 +227,7 @@ class BiasBenchmark:
             return np.nan
 
     @staticmethod
-    def compute_predict_estimator(y_true, y_pred):
+    def compute_predict_estimator(y_true, y_pred, y_pred_continuous=None):
         assert pd.core.dtypes.common.is_dtype_equal(y_true.dtype, np.dtype('bool'))
 
         pos_cnt = sum(y_true)
@@ -240,10 +239,23 @@ class BiasBenchmark:
         at_predict = y_pred[y_true]  # predictions for True actually, might predict to 0.4(bad)
         af_predict = y_pred[~y_true]
 
-        return ((neg_cnt, pos_cnt, pos_cnt/(neg_cnt+pos_cnt)),
-        (pred_neg_cnt, pred_pos_cnt),
-        (len(af_predict), np.mean(af_predict), np.std(af_predict)),
-        (len(at_predict), np.mean(at_predict), np.std(at_predict)))
+        if y_pred_continuous is None:
+            return (
+                (int(neg_cnt), int(pos_cnt), pos_cnt/(neg_cnt+pos_cnt)),
+                (int(pred_neg_cnt), int(pred_pos_cnt)),
+                (len(af_predict), np.mean(af_predict), np.std(af_predict)),
+                (len(at_predict), np.mean(at_predict), np.std(at_predict)))
+        else:
+            at_cont_val = y_pred_continuous[y_true]
+            af_cont_val = y_pred_continuous[~y_true]
+
+            return (
+                (int(neg_cnt), int(pos_cnt), pos_cnt/(neg_cnt+pos_cnt)),
+                (int(pred_neg_cnt), int(pred_pos_cnt)),
+                (len(af_predict), np.mean(af_predict), np.std(af_predict)),
+                (len(at_predict), np.mean(at_predict), np.std(at_predict)),
+                (len(af_cont_val), np.mean(af_cont_val), np.std(af_cont_val)),
+                (len(at_cont_val), np.mean(at_cont_val), np.std(at_cont_val)))
 
 
 
@@ -259,7 +271,10 @@ class BiasBenchmark:
         """
         subgroup_examples = df[df[subgroup]]  # innter df[subgroup] will get out boolean list, which is used to select this
         # subgroup examples
-        return BiasBenchmark.compute_predict_estimator(subgroup_examples[label], subgroup_examples[model_name])
+        if label == TARGET_COLUMN:
+            return BiasBenchmark.compute_predict_estimator(subgroup_examples[label], subgroup_examples[model_name], y_pred_continuous=subgroup_examples[label+'_orig'])
+        else:
+            return BiasBenchmark.compute_predict_estimator(subgroup_examples[label], subgroup_examples[model_name])
 
     @staticmethod
     def compute_subgroup_auc(df, subgroup, label, model_name):
@@ -317,7 +332,7 @@ class BiasBenchmark:
                                        include_asegs=False):
         """
         Computes per-subgroup metrics for all subgroups and one model.
-        # bias_metrics_df = BiasBenchmark.compute_bias_metrics_for_model(validate_df, IDENTITY_COLUMNS, MODEL_NAME, TOXICITY_COLUMN)
+        # bias_metrics_df = BiasBenchmark.compute_bias_metrics_for_model(validate_df, IDENTITY_COLUMNS, MODEL_NAME, TARGET_COLUMN)
         :param dataset: prediction result
         :param subgroups: all group names
         :param model: my model name
@@ -351,7 +366,7 @@ class BiasBenchmark:
     # Calculate the final score
     @staticmethod
     def calculate_overall_auc(df, model_name):
-        true_labels = df[TOXICITY_COLUMN]
+        true_labels = df[TARGET_COLUMN]
         predicted_labels = df[model_name]
         return metrics.roc_auc_score(true_labels, predicted_labels)
 
@@ -361,7 +376,7 @@ class BiasBenchmark:
         info[OVERALL_AUC] = BiasBenchmark.calculate_overall_auc(df, model_name)
         info['subgroup'] = 'overall'
         info['subgroup_size'] = len(df)
-        info['distribution'] = BiasBenchmark.compute_predict_estimator(df[TOXICITY_COLUMN], df[model_name])
+        info['distribution'] = BiasBenchmark.compute_predict_estimator(df[TARGET_COLUMN], df[model_name], y_pred_continuous=df[TARGET_COLUMN+'_orig'])
         return info
 
     @staticmethod
@@ -408,9 +423,9 @@ class BiasBenchmark:
             validate_df[model_name] = pred  # prediction
 
         print('In caculating benchmark...')
-        validate_df = BiasBenchmark.copy_convert_dataframe_to_bool(validate_df[IDENTITY_COLUMNS + [TOXICITY_COLUMN, TEXT_COLUMN, model_name]], self.threshold)
+        validate_df = BiasBenchmark.copy_convert_dataframe_to_bool(validate_df[IDENTITY_COLUMNS + [TARGET_COLUMN, TEXT_COLUMN, model_name]], self.threshold)
         bias_metrics_df, subgroup_distribution = BiasBenchmark.compute_bias_metrics_for_model(validate_df,
-                                                                       IDENTITY_COLUMNS, model_name, TOXICITY_COLUMN)
+                                                                       IDENTITY_COLUMNS, model_name, TARGET_COLUMN)
         overall_auc_dist = BiasBenchmark.calculate_overall_auc_distribution(validate_df, model_name)
         final_score = BiasBenchmark.get_final_metric(bias_metrics_df, overall_auc_dist[OVERALL_AUC])
 
