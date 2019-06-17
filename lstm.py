@@ -29,7 +29,7 @@ from IPython.core.debugger import set_trace
 from tensorflow.python import debug as tf_debug
 import gc
 
-# NUM_MODELS = 2  # might be helpful but...
+NUM_MODELS = 2  # might be helpful but...
 
 # BATCH_SIZE = 2048 * 2  # for cloud server runing
 BATCH_SIZE = 1024//2  # for cloud server runing
@@ -38,6 +38,54 @@ DENSE_HIDDEN_UNITS = 4 * LSTM_UNITS
 RES_DENSE_HIDDEN_UNITS = 5
 
 EPOCHS = 7  # 4 seems good for current setting, more training will help for the final score?
+
+DEBUG = False
+## all for debug
+preds = None
+kernel = None
+X,y,idx_train_background, idx_val_background = None, None,None,None
+y_res_pred = None
+
+# lambda e: 5e-3 * (0.5 ** e),
+STARTER_LEARNING_RATE = 1e-3 # as the BCE we adopted...
+LEARNING_RATE_DECAY_PER_EPOCH = 0.5
+
+IDENTITY_RUN = False
+TARGET_RUN = "lstm"
+TARGET_RUN_READ_RESULT = False
+RESTART_TRAIN = False
+RESTART_TRAIN_RES = True
+RESTART_TRAIN_ID = False
+
+NO_AUX = False
+Y_TRAIN_BIN = False  # with True, slightly worse
+
+FOCAL_LOSS = True
+
+FOCAL_LOSS_GAMMA = 0.
+ALPHA = 0.91
+PRD_ONLY = True  # will not train the model
+NOT_PRD = True
+FINAL_SUBMIT = True
+FINAL_DEBUG = True
+if FINAL_SUBMIT:
+    TARGET_RUN = "lstm"
+    EPOCHS = 6
+    PRD_ONLY = False  # not training
+    NOT_PRD = False  # prd submission test
+    RESTART_TRAIN = False
+    FOCAL_LOSS_GAMMA = -1.
+
+    DEBUG = False
+    if FINAL_DEBUG:
+        DEBUG = True
+        PRD_ONLY = False  # not training if True
+        RESTART_TRAIN = False
+        NOT_PRD = True  # prd submission test
+        NUM_MODELS = 1  # might timeout, so back to 2
+        STARTER_LEARNING_RATE = 1e-3
+        Y_TRAIN_BIN = False
+        FOCAL_LOSS_GAMMA = -1.
 
 from tensorflow.keras import initializers, regularizers, constraints
 
@@ -311,7 +359,6 @@ def reinitLayers(model):
             v_arg = getattr(layer, v)
             if hasattr(v_arg,'initializer'):  # not work for layer wrapper, like Bidirectional
                 initializer_method = getattr(v_arg, 'initializer')
-                if DEBUG: set_trace()
                 initializer_method.run(session=session)
                 print('reinitializing layer {}.{}'.format(layer.name, v))
 
@@ -355,8 +402,8 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         self.train_X_all, self.train_y_all, self.train_y_aux_all, self.to_predict_X_all, self.embedding_matrix = self.emb.data_prepare(
             action)
         if Y_TRAIN_BIN:
-            self.train_y_float_backup = self.train_y
-            self.train_y = np.where(self.train_y > 0.5, True, False)
+            self.train_y_float_backup = self.train_y_all
+            self.train_y_all = np.where(self.train_y_all >= 0.5, True, False)
         #if action is not None:
         #    if action == TRAIN_DATA_EXCLUDE_IDENDITY_ONES:
         self.load_identity_data_idx()
@@ -706,13 +753,8 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         # line. we need to find the ML line
         return model
 
-    def run_lstm_model(self, final_train=False, n_splits=2, predict_ones_with_identity=True,
+    def run_lstm_model(self, final_train=False, n_splits=NUM_MODELS, predict_ones_with_identity=True,
                        params=None, val_mask=None):
-        # checkpoint_predictions = []
-        # weights = []
-        splits = list(KFold(n_splits=n_splits, random_state=2019, shuffle=True).split(
-            self.train_X))  # just use sklearn split to get id and it is fine. For text thing,
-        # memory is enough, fit in, so tfrecord not needed, just pickle and load it all to memory
         # TODO condiser use train test split as
         '''
         train_df, validate_df = model_selection.train_test_split(train, test_size=0.2)
@@ -728,6 +770,9 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         train_y_aux_passed = params.get('train_y_aux')
         val_y_aux_passed = params.get('val_y_aux')
         patience = params.get('patience', 3)
+        bin_target = params.get('binary')
+        f_g = params.get('fortify_subgroup')
+
         if train_data is None:
             train_X = self.train_X
             train_y = self.train_y
@@ -762,9 +807,14 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         else:
             h5_file = prefix + '_attention_lstm_' + f'.hdf5'  # we could load with file name, then remove and save to new one
 
+        logger.debug(h5_file)
+
         starter_lr = params.get('starter_lr', STARTER_LEARNING_RATE)
         # model thing
+        set_trace()
         if re_train or not os.path.isfile(h5_file):
+            logger.debug(f're_train is {re_train}, file {h5_file} exists? {os.path.isfile(h5_file)}')
+
             if NO_AUX:
                 if FOCAL_LOSS:
                     model = self.build_lstm_model_customed(0, None, self.embedding_layer, with_aux=False,
@@ -784,7 +834,11 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             model = load_model(h5_file, custom_objects={'binary_crossentropy_with_focal': binary_crossentropy_with_focal, 'AttentionRaffel':AttentionRaffel})
             starter_lr = starter_lr * LEARNING_RATE_DECAY_PER_EPOCH ** (EPOCHS)
             self.model = model
-            logger.debug('restore from the model file {} -> done'.format(h5_file))
+            logger.debug('restore from the model file {} -> done\n\n\n'.format(h5_file))
+
+        if FINAL_DEBUG:
+            pred = model.predict(val_X, verbose=2, batch_size=BATCH_SIZE)
+            self.check_preds_in_val(pred, val_mask, run_times=0)
 
         run_times = 0
         for fold in range(n_splits):
@@ -800,12 +854,13 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                 prog_bar_logger = NBatchProgBarLogger(display_per_batches=int(1600000 / 20 / BATCH_SIZE), early_stop=True,
                                           patience_displays=3)
 
+                if f_g is not None and bin_target:  # only binary for subgroup, just try to see if it helps
+                    val_y = val_y >= 0.5  # we also need to filter out the subgroup data (in outer layer now)
+
                 train_labels = train_y if NO_AUX else [train_y, train_y_aux]
                 val_labels = val_y if NO_AUX else [val_y, val_y_aux]
-                #if final_train:
-                #    val_split = 0.
-                #else:
-                #    val_split = 0.05
+
+
                 model.fit(train_X,
                           train_labels,
                           #validation_split=val_split,
@@ -813,7 +868,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                           epochs=EPOCHS,
                           sample_weight=sample_weights,
                           # steps_per_epoch=int(len(self.train_X)*0.95/BATCH_SIZE),
-                          verbose=0,
+                          verbose=0, # prog_bar_logger will handle log, so set to 0 here
                           # validation_data=(self.train_X[val_ind], self.train_y[val_ind]>0.5),
                           validation_data=(val_X, val_labels),
                           callbacks=[
@@ -824,36 +879,47 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                                   verbose=1
                               ),
                               early_stop,
-                              ckpt,
+                              #ckpt,
                               prog_bar_logger
                           ])
 
-                run_times += 1
             if not NOT_PRD:
                 #if final_train:
-                test_result = model.predict(self.to_predict_X_all, verbose=1)
+                test_result = model.predict(self.to_predict_X_all, verbose=2)
+                run_times += 1
                 if NO_AUX:
-                    test_preds += np.array(test_result).ravel()
+                    test_result_column = np.array(test_result).ravel()
                 else:
-                    test_preds += np.array(test_result[0]).ravel()  # the shape of preds, is [0] is the predict,[1] for aux
+                    test_result_column = np.array(test_result[0]).ravel()  # the shape of preds, is [0] is the predict,[1] for aux
+                self.save_result(test_result_column, filename=f'submission_split_{run_times}.csv')
 
+                test_preds += test_result_column
                 test_preds_avg = test_preds / run_times
                 self.save_result(test_preds_avg)  # save everything in case failed in some folds
 
                 #elif train_test_split:
-                pred = model.predict(val_X, verbose=1, batch_size=BATCH_SIZE)
-                if not NO_AUX:
-                    preds = np.array(pred[0]).ravel()
-                else:
-                    preds = np.array(pred).ravel()
+            pred = model.predict(val_X, verbose=2, batch_size=BATCH_SIZE)
+            self.check_preds_in_val(pred, val_mask, run_times=run_times+1)
 
-                self.train_df.loc[val_mask, 'lstm'] = preds
-                self.calculate_metrics_and_print(filename_for_print=f'metrics_log_{run_times}.txt', validate_df_with_preds=kernel.train_df[val_mask], benchmark_base=kernel.train_df[val_mask])
+    def check_preds_in_val(self, pred, val_mask, run_times=0):
+        if not NO_AUX:
+            preds = np.array(pred[0]).ravel()
+        else:
+            preds = np.array(pred).ravel()
 
+        self.train_df.loc[val_mask, 'lstm'] = preds
+        if True:
+            self.train_df[d.VAL_ERR_COLUMN] = 0
+            #self.train_df.loc[val_mask, 'lstm'] = preds
+            self.train_df.loc[val_mask, d.VAL_ERR_COLUMN] = preds - self.train_df.loc[val_mask, d.TARGET_COLUMN]
+            dstr = self.target_analyzer.get_err_distribution(self.train_df, val_mask)
+            for k, v in dstr.items():
+                logger.debug(f'error info: {k}, {v[1]}')
+        self.calculate_metrics_and_print(filename_for_print=f'metrics_log_{run_times}.txt', validate_df_with_preds=kernel.train_df[val_mask], benchmark_base=kernel.train_df[val_mask])
 #        test_preds /= run_times
 #        self.save_result(test_preds)
 
-    def save_result(self, predictions):
+    def save_result(self, predictions, filename=None):
         if self.emb.test_df_id is None:
             self.emb.read_train_test()
         submission = pd.DataFrame.from_dict({
@@ -861,7 +927,10 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             # 'id': test_df.id,
             'prediction': predictions
         })
-        submission.to_csv('submission.csv', index=False)
+        if filename is not None:
+            submission.to_csv(filename, index=False)
+        else:
+            submission.to_csv('submission.csv', index=False)
 
     def prepare_second_stage_data_index(self, y_pred, subgroup='white', only_false_postitive=False, n_splits=5):
         """
@@ -1082,6 +1151,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         self.train_df = self.emb.train_df
         # self._get_identities()  # for known ones, just skip
         analyzer = d.TargetDistAnalyzer(self.train_df)
+        self.target_analyzer = analyzer
         o = analyzer.get_distribution_overall()
         self.get_identities_for_training()
         gs = analyzer.get_distribution_subgroups()  # for subgroup, use 0.5 as the limit, continuous info not used... anyway, we try first
@@ -1173,27 +1243,29 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 
         return weights
 
-    def prepare_train_labels(self, train_y_all, train_mask, custom_weights=False, with_aux=False, train_y_aux=None, sample_weights=None):
-        val_mask = np.invert(kernel.train_mask)
+    def prepare_train_labels(self, train_y_all, train_mask, custom_weights=False, with_aux=False, train_y_aux=None, sample_weights=None,fortify_subgroup=None):
+        val_mask = np.invert(kernel.train_mask)  # this is whole train_mask
+
+
+        if fortify_subgroup is not None:
+            train_mask = train_mask & (self.train_df[fortify_subgroup+'_in_train']>=0.5)  # only use the subgroup data
+
+        train_X = kernel.train_X_all[train_mask]
+        val_X = kernel.train_X_all[val_mask]
 
         if not custom_weights:
             if with_aux:
-                return train_y_all[train_mask], train_y_aux[train_mask], train_y_all[val_mask], train_y_aux[val_mask]
+                return train_X, val_X, train_y_all[train_mask], train_y_aux[train_mask], train_y_all[val_mask], train_y_aux[val_mask]
             else:
-                return train_y_all[train_mask], train_y_all[val_mask]
+                return train_X, val_X, train_y_all[train_mask], train_y_all[val_mask]
         else:
             # credit to https://www.kaggle.com/tanreinama/simple-lstm-using-identity-parameters-solution
             if sample_weights is None:
                 raise RuntimeError('sample weights cannot be None if use custom_weights')
             if with_aux:
-                return np.vstack([train_y_all, sample_weights]).T[train_mask], train_y_aux[train_mask], train_y_all[val_mask], train_y_aux[val_mask]
+                return train_X, val_X, np.vstack([train_y_all, sample_weights]).T[train_mask], train_y_aux[train_mask], train_y_all[val_mask], train_y_aux[val_mask]
             else:
-                return np.vstack([train_y_all, sample_weights]).T[train_mask], train_y_all[val_mask]
-
-
-                val_X = kernel.train_X_all[val_mask]  # all with identity, (it looks like my test test... not right, all with identy ones)
-                val_y = kernel.train_y_all[val_mask]
-                val_y_aux = kernel.train_y_aux_all[val_mask]
+                return train_X, val_X, np.vstack([train_y_all, sample_weights]).T[train_mask], train_y_all[val_mask]
 
     def res_subgroup(self, subgroup, y_pred):
         # first prepare the data
@@ -1303,12 +1375,12 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             if preds is not None: logger.debug(f'{model_name} result for {len(preds)} items:')
             if validate_df_with_preds is not None: logger.debug(f'{model_name} result for {len(validate_df_with_preds)} items:')
             if validate_df_with_preds is not None:
-                value, bias_metrics, subgroup_distribution, overall_distribution = self.judge.calculate_benchmark(validate_df=validate_df_with_preds, model_name=model_name)
+                value, score_comp, bias_metrics, subgroup_distribution, overall_distribution = self.judge.calculate_benchmark(validate_df=validate_df_with_preds, model_name=model_name)
             else:
-                value, bias_metrics, subgroup_distribution, overall_distribution = self.judge.calculate_benchmark(preds)
+                value, score_comp, bias_metrics, subgroup_distribution, overall_distribution = self.judge.calculate_benchmark(preds)
         elif model_name.startswith('res'):
-            logger.debug(f'{model_name} result for {len(validate_df_with_preds)} items in background')
-            value, bias_metrics, subgroup_distribution, overall_distribution = self.judge.calculate_benchmark(validate_df=validate_df_with_preds, model_name=model_name)
+                logger.debug(f'{model_name} result for {len(validate_df_with_preds)} items in background')
+                value, score_comp, bias_metrics, subgroup_distribution, overall_distribution = self.judge.calculate_benchmark(validate_df=validate_df_with_preds, model_name=model_name)
 
         bias_metrics_df = bias_metrics.set_index('subgroup')
 
@@ -1317,14 +1389,15 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 
         # bias_metrics_df = pickle.load(open("bias_metrics", 'rb'))  # only the ones with identity is predicted
         # subgroup_distribution = pickle.load(open("subgroup_dist", 'rb'))  # only the ones with identity is predicted
-
-        logger.info(f'final metric: {value} for threshold {threshold} applied to \'{d.TARGET_COLUMN}\' column, ')
-        logger.info("\n{}".format(bias_metrics[['subgroup_auc', 'bpsn_auc', 'bnsp_auc']]))
-        # logger.info(subgroup_distribution)
         if not detail:
             return
-        print("### subgroup auc", file=file_for_print)
 
+        print(f'bias metrics details (AUC, BPSN, BNSP): {score_comp}', file=file_for_print)
+        print(f'final metric: {value} for threshold {threshold} applied to \'{d.TARGET_COLUMN}\' column, ', file=file_for_print)
+        #print("\n{}".format(bias_metrics[['subgroup_auc', 'bpsn_auc', 'bnsp_auc']]), file=file_for_print)
+        print("\n{}".format(bias_metrics[['subgroup', 'subgroup_auc']]), file=file_for_print)
+
+        print("### subgroup auc", file=file_for_print)
         def d_str(t):
             num, mean, std = t
             return f'{num}, {mean:.4}, {std:.4}'
@@ -1381,31 +1454,6 @@ parser.add_argument('--train_steps', default=2, type=int,
 parser.add_argument('--learning_rate', default=0.001, type=float,
                     help='learing rate')
 
-DEBUG = False
-## all for debug
-preds = None
-kernel = None
-X,y,idx_train_background, idx_val_background = None, None,None,None
-y_res_pred = None
-
-# lambda e: 5e-3 * (0.5 ** e),
-STARTER_LEARNING_RATE = 1e-3 # as the BCE we adopted...
-LEARNING_RATE_DECAY_PER_EPOCH = 0.5
-
-IDENTITY_RUN = False
-TARGET_RUN = "lstm"
-TARGET_RUN_READ_RESULT = False
-RESTART_TRAIN = False
-RESTART_TRAIN_RES = True
-RESTART_TRAIN_ID = False
-
-NO_AUX = False
-Y_TRAIN_BIN = False  # with True, slightly worse
-
-FOCAL_LOSS = True
-
-FOCAL_LOSS_GAMMA = 0.
-ALPHA = 0.91
 
 #FOCAL_LOSS_GAMMA = 2.
 #ALPHA = 0.666
@@ -1662,23 +1710,24 @@ def main(argv):
                 #pickle.dump(val_mask, open("val_mask", 'wb'))  # only the ones with identity is predicted
                 val_mask = np.invert(kernel.train_mask)
 
-                train_X = kernel.train_X_all[kernel.train_mask]
-                val_X = kernel.train_X_all[val_mask]
+                train_X = None
+                val_X = None
                 train_y_aux = None
                 train_y = None
 
                 if NO_AUX:
-                    train_y, val_y = kernel.prepare_train_labels(kernel.train_y_all, kernel.train_mask, custom_weights=True, with_aux=False, train_y_aux=None, sample_weights=sample_weights)
+                    train_X, val_X, train_y, val_y = kernel.prepare_train_labels(kernel.train_y_all, kernel.train_mask, custom_weights=True, with_aux=False, train_y_aux=None, sample_weights=sample_weights)
                 else:
-                    train_y, train_y_aux, val_y, val_y_aux = \
+                    train_X, val_X, train_y, train_y_aux, val_y, val_y_aux = \
                         kernel.prepare_train_labels(kernel.train_y_all,
                                                      kernel.train_mask,
                                                      custom_weights=True,
                                                      with_aux=True,
                                                      train_y_aux=kernel.train_y_aux_all,
-                                                     sample_weights=sample_weights)
+                                                     sample_weights=sample_weights, fortify_subgroup=None)
                 sample_weights_train = None  # no need to use in fit, will cooperate to the custom loss function
-                #logger.debug(val_X[:10])
+                logger.debug(f'train with {len(train_X)} data entries')
+                logger.debug(f'prefix: {prefix}')
                 preds = kernel.run_lstm_model(predict_ones_with_identity=True, final_train=FINAL_SUBMIT, params={
                     'prefix': prefix,
                     're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
@@ -1689,12 +1738,14 @@ def main(argv):
                     'train_y_aux': train_y_aux,
                     'val_y_aux': val_y_aux,
                     'val_data': (val_X, val_y),   # train data with identities
-                    'patience': 1,
+                    'patience': 2,
+                    'binary': True,
+                    #'fortify_subgroup': 'black',
                 },
                                               val_mask=val_mask)  # only the val_mask ones is predicted TODO modify val set, to resemble test set
                 #if not FINAL_SUBMIT:  # we still need to check this ... for evalutate our model
         else:
-            preds, val_mask = pickle.load(open('pred_val_mask', 'rb'))
+            preds, val_mask = pickle.load(open('pred_val_mask', 'rb'))  # ans is in self.train_df.loc[val_mask, 'lstm'] = preds
 
         # else:
         #    preds = pickle.load(open('predicts', 'rb'))
@@ -1709,12 +1760,6 @@ def main(argv):
         # value, bias_metrics = kernel.evaluate_model(pred_target)
         # logger.info(value)
         # logger.info(f"\n{bias_metrics}")
-
-    # kernel.run_lstm_model()
-
-    # kernel.run_identity_model(5, train_id_X, train_id_y, params={
-    #    'prefix': "/proc/driver/nvidia/identity"
-    # })
     return
 
 
@@ -1728,16 +1773,6 @@ BALANCE_SCHEME_TARGET_SPLITS = 'no_target_bucket_extreme_positive'  # not work, 
 WEIGHT_TO_Y = True
 
 
-PRD_ONLY = True  # will not train the model
-NOT_PRD = True
-FINAL_SUBMIT = True
-if FINAL_SUBMIT:
-    DEBUG = False
-    TARGET_RUN = "lstm"
-    EPOCHS = 6
-    PRD_ONLY = False
-    NOT_PRD = False
-
 
 ANA_RESULT = False
 if os.path.isfile('.ana_result'):
@@ -1746,7 +1781,7 @@ if os.path.isfile('.ana_result'):
 
     IDENTITY_RUN = False
     TARGET_RUN = "lstm"
-    PRD_ONLY = False
+    PRD_ONLY = True
     RESTART_TRAIN_RES = False
 
 if __name__ == '__main__':

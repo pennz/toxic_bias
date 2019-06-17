@@ -133,11 +133,11 @@ def download_lstm_from_gdrive():
     """
     run_commans(
         f"""
-        ./gdrive download 1V651fAb8_RxDF--VfHWlUQ8wTzULPPyu --path {GDRIVE_DOWNLOAD_DEST} # train
-        ./gdrive download 144glCjAb6rTJXNddslpc-mgQBCGGybTr --path {GDRIVE_DOWNLOAD_DEST} # test
-        ./gdrive download 1A3vj6mBUTGYnvd4HfDyI9hBT78IWyABf --path {GDRIVE_DOWNLOAD_DEST} # embedding
+        #./gdrive download 1V651fAb8_RxDF--VfHWlUQ8wTzULPPyu --path {GDRIVE_DOWNLOAD_DEST} # train
+        #./gdrive download 144glCjAb6rTJXNddslpc-mgQBCGGybTr --path {GDRIVE_DOWNLOAD_DEST} # test
+        #./gdrive download 1A3vj6mBUTGYnvd4HfDyI9hBT78IWyABf --path {GDRIVE_DOWNLOAD_DEST} # embedding
         #./gdrive download 1d_2uUzStUhuzErWAcIIk2TuzA1bFyKN7 --path {GDRIVE_DOWNLOAD_DEST} # predicts (no res)
-        #./gdrive download 1VFYcLECsE2BAYoe_q2o4a7aMT3OTp5S6 --path {GDRIVE_DOWNLOAD_DEST} # model
+        ./gdrive download 1H6ktwj59KtmiUbXZT4bwT7cIUL77MLsa --path {GDRIVE_DOWNLOAD_DEST} # model
         #./gdrive download   # predicts result (for target)
         #./gdrive download   # identity model
         #mv lstm_data/* . 
@@ -156,7 +156,7 @@ def exit00():
     import os
     os._exit(00)  # will make ipykernel restart
 
-quick = False
+quick = True
 if os.getcwd().find('lstm') > 0:
     #upload_file_one_at_a_time("data_prepare.py")
     setup_gdrive()
@@ -167,7 +167,7 @@ else:
             mount_gdrive()
         except ModuleNotFoundError:
             setup_gdrive()
-            download_lstm_from_gdrive()
+            #download_lstm_from_gdrive()
 
         if not quick:
             if not os.path.isdir("../input") and not os.path.isdir('/content/gdrivedata/My Drive/'):

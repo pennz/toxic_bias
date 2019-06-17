@@ -18,6 +18,7 @@ from IPython.core.debugger import set_trace
 
 
 MODEL_NAME = "lstm"
+VAL_ERR_COLUMN = "err"
 EMBEDDING_FILES = [
     '../input/glove840b300dtxt/glove.840B.300d.txt',
 '../input/fasttext-crawl-300d-2m/crawl-300d-2M.vec']
@@ -181,25 +182,46 @@ from sklearn import metrics
 class TargetDistAnalyzer:
     def __init__(self, target):
         self.df = target  # df with target, with identity information, then we can sort it out
-        self.descretizer = sklearn.preprocessing.KBinsDiscretizer(10+1, encode='ordinal', strategy='uniform')
-        self.descretizer.fit(target[TARGET_COLUMN].values.reshape(-1, 1))
+        self.discretizer = sklearn.preprocessing.KBinsDiscretizer(10 + 1, encode='ordinal', strategy='kmeans')
+        self.discretizer.fit(target[TARGET_COLUMN].values.reshape(-1, 1))
         self.id_used_in_train = None
 
     def get_distribution(self, target_data):
         """
-        target_data: pandas series, need to get index, so need series
+        target_data: pandas series, need to get index, so need series, in the series, values are target (prediction)
 
         :return: (type, cnt number, frequency, index) pair list for this distribution
         """
         dst = []
 
-        y_t = self.descretizer.transform(target_data.values.reshape(-1,1))
+        y_t = self.discretizer.transform(target_data.values.reshape(-1, 1))
         uniq_elements, element_counts = np.unique(y_t, return_counts=True)
         all_counts = len(y_t)
         for i, e in enumerate(uniq_elements):
             dst.append((e, element_counts[i], element_counts[i]/all_counts, target_data.loc[(y_t == e).ravel()].index))
 
         return dst
+
+    def get_err_distribution(self, err_data, val_mask):
+        """
+
+        :param err_data: series, contain both target values and error values
+        :return: (type, cnt number, frequency, index) pair list for this distribution
+        """
+        dstr = {}
+
+        df = err_data
+
+        for g in IDENTITY_COLUMNS:
+            val_subgroup_idx = df.loc[val_mask & (df[g] > 0.5)].index
+
+            val_subgroup = df.loc[val_subgroup_idx, [TARGET_COLUMN, VAL_ERR_COLUMN]]
+
+            dst = self.get_distribution(val_subgroup[TARGET_COLUMN])  # could use continuous data, might be helpful so calculate belongs (fuzzy logic)
+
+            err_mean_in_split = [val_subgroup.loc[d[3], VAL_ERR_COLUMN].mean() for d in dst]
+            dstr[g] = (dst, err_mean_in_split)
+        return dstr
 
     def get_distribution_overall(self):
         return self.get_distribution(self.df[TARGET_COLUMN])
@@ -392,8 +414,7 @@ class BiasBenchmark:
             BiasBenchmark.power_mean(bias_df[BNSP_AUC], POWER)
         ]
         bias_score = np.average(bias_metrics_on_subgroups)
-        lstm.logger.debug(f'bias metrics details (AUC, BPSN, BNSP): {bias_metrics_on_subgroups}')
-        return (OVERALL_MODEL_WEIGHT * overall_auc) + ((1 - OVERALL_MODEL_WEIGHT) * bias_score)
+        return (OVERALL_MODEL_WEIGHT * overall_auc) + ((1 - OVERALL_MODEL_WEIGHT) * bias_score), bias_metrics_on_subgroups
 
     @staticmethod
     def convert_to_bool(df, col_name, threshold=0.5, keep_original=False):
@@ -427,9 +448,9 @@ class BiasBenchmark:
         bias_metrics_df, subgroup_distribution = BiasBenchmark.compute_bias_metrics_for_model(validate_df,
                                                                        IDENTITY_COLUMNS, model_name, TARGET_COLUMN)
         overall_auc_dist = BiasBenchmark.calculate_overall_auc_distribution(validate_df, model_name)
-        final_score = BiasBenchmark.get_final_metric(bias_metrics_df, overall_auc_dist[OVERALL_AUC])
+        final_score, score_comp = BiasBenchmark.get_final_metric(bias_metrics_df, overall_auc_dist[OVERALL_AUC])
 
-        return final_score, bias_metrics_df, subgroup_distribution, overall_auc_dist
+        return final_score, score_comp, bias_metrics_df, subgroup_distribution, overall_auc_dist
 
 
 # embedding vocab
@@ -941,9 +962,12 @@ class EmbeddingHandler:
         else:
             path = filename
         if os.path.isfile(path):
+            lstm.logger.debug("load :"+filename)
             return pickle.load(open(path, 'rb'))
         else:
-            self.dump_obj(default, filename)
+            if default is not None:
+                lstm.logger.debug("dump :"+filename)
+                self.dump_obj(default, filename)
             return default
 
     def file_exist(self, filename, fullpath=False):
@@ -1104,14 +1128,16 @@ class EmbeddingHandler:
         """
         if action is not None: lstm.logger.debug("{} in data preparation".format(action))
 
-        try:
-        # just recover from record file
+        try:  # just recover from record file
             emb, data_train, test_data = self.read_emb_data_from_input()
             self.x_train, self.y_train, self.y_aux_train = zip(*data_train)
             self.x_train, self.y_train, self.y_aux_train = np.array(self.x_train), np.array(self.y_train), np.array(self.y_aux_train)
             lstm.logger.debug("restored data from files for training")
+            self.BIN_FOLDER = '/proc/driver/nvidia/'
             return self.x_train, self.y_train, self.y_aux_train, test_data, emb
         except FileNotFoundError:
+            lstm.logger.debug('cannot restore emb, trainX from jigsaw kaggle file data')
+        except TypeError:  # if read out None for data_train
             lstm.logger.debug('cannot restore emb, trainX from jigsaw kaggle file data')
 
         #if os.path.isfile(DATA_FILE_FLAG) and not self.do_emb_matrix_preparation:  # in final stage, no need to check this...
@@ -1129,12 +1155,12 @@ class EmbeddingHandler:
                         if not self.file_exist(self.E_M_FILE, fullpath=True):
                             self.BIN_FOLDER = '/proc/driver/nvidia/'
                     self.embedding_matrix = pickle.load(open(self.E_M_FILE, "rb"))
-
+            lstm.logger.debug(self.E_M_FILE)
 
             if action is not None:  # exist data, need to convert data
+                lstm.logger.debug(action)
                 if action == lstm.CONVERT_TRAIN_DATA:
                     self.prepare_tfrecord_data(train_test_data=True, embedding=False, action=action) # train data will rebuild, so we put it before read from pickle
-
 
             try:
                 data_train = pickle.load(open(self.DATA_TRAIN_FILE, "rb"))  # (None, 2048)
@@ -1144,6 +1170,7 @@ class EmbeddingHandler:
                     self.BIN_FOLDER = './'
                 data_train = pickle.load(open(self.DATA_TRAIN_FILE, "rb"))  # (None, 2048)
 
+            lstm.logger.debug(self.DATA_TRAIN_FILE)
             self.x_test = pickle.load(open(self.DATA_TEST_FILE, "rb"))  # (None, 2048) 2048 features from xception net
 
             self.x_train, self.y_train, self.y_aux_train = zip(*data_train)
@@ -1169,6 +1196,7 @@ class EmbeddingHandler:
 
             return self.x_train, self.y_train, self.y_aux_train, self.x_test, self.embedding_matrix
         else:
+            lstm.logger.debug(self.DATA_TRAIN_FILE)
             # (x_train, y_train, y_aux_train), x_test = prepare_tfrecord_data()
             if action is not None and action == lstm.CONVERT_TRAIN_DATA:
                 self.embedding_matrix = pickle.load(open(self.E_M_FILE, "rb"))
