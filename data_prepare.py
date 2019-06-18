@@ -27,9 +27,9 @@ IDENTITY_COLUMNS = [
     'male', 'female', 'homosexual_gay_or_lesbian', 'christian', 'jewish',
     'muslim', 'black', 'white', 'psychiatric_or_mental_illness'
 ]  # features, meaning
-AUX_COLUMNS = ['severe_toxicity', 'obscene', 'identity_attack', 'insult', 'threat', 'sexual_explicit']
-TEXT_COLUMN = 'comment_text'
 TARGET_COLUMN = 'target'
+AUX_COLUMNS = [TARGET_COLUMN, 'severe_toxicity', 'obscene', 'identity_attack', 'insult', 'threat', 'sexual_explicit']
+TEXT_COLUMN = 'comment_text'
 # CHARS_TO_REMOVE = '!"#$%&()*+,-./:;<=>?@[\\]^_`{|}~\t\n“”’\'∞θ÷α•à−β∅³π‘₹´°£€\×™√²—'
 DATA_FILE_FLAG = '.tf_record_saved'
 
@@ -916,7 +916,7 @@ class EmbeddingHandler:
         train_y_identity_df = self.get_identity_df()
         return self.x_train[train_y_identity_df.index], train_y_identity_df.values, train_y_identity_df.index# non-binary
 
-    def text_preprocess(self, target_binarize=True):
+    def text_preprocess(self, target_binarize=False):
         lstm.logger.debug("Text preprocessing")
         if self._text_preprocessed:
             return  # just run once.... not a good flag
@@ -926,7 +926,6 @@ class EmbeddingHandler:
         self.test_df[TEXT_COLUMN] = self.df['treated_comment'][train_len:]
 
         if target_binarize:
-            # todo consider multiple bin-split (one~ten star) for different subgroup
             for column in IDENTITY_COLUMNS + AUX_COLUMNS + [TARGET_COLUMN]:
                 self.train_df[column] = np.where(self.train_df[column] >= 0.5, True, False)
 

@@ -63,6 +63,8 @@ Y_TRAIN_BIN = False  # with True, slightly worse
 FOCAL_LOSS = True
 
 FOCAL_LOSS_GAMMA = 0.
+FOCAL_LOSS_GAMMA_NEG_POS = 0.5
+FOCAL_LOSS_BETA_NEG_POS = 0.5
 ALPHA = 0.91
 PRD_ONLY = True  # will not train the model
 NOT_PRD = True
@@ -74,7 +76,7 @@ if FINAL_SUBMIT:
     PRD_ONLY = False  # not training
     NOT_PRD = False  # prd submission test
     RESTART_TRAIN = False
-    FOCAL_LOSS_GAMMA = -0.5
+    FOCAL_LOSS_GAMMA = 0.0
 
     DEBUG = False
     if FINAL_DEBUG:
@@ -401,6 +403,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 
         self.train_X_all, self.train_y_all, self.train_y_aux_all, self.to_predict_X_all, self.embedding_matrix = self.emb.data_prepare(
             action)
+        self.train_y_aux_all = self.train_df[d.AUX_COLUMNS].values  # picked ones are binarized
         if Y_TRAIN_BIN:
             self.train_y_float_backup = self.train_y_all
             self.train_y_all = np.where(self.train_y_all >= 0.5, True, False)
@@ -699,14 +702,14 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             hidden = add([hidden, Dense(DENSE_HIDDEN_UNITS, activation=activate_type)(hidden)])
 
         logit = Dense(1, activation=None)(hidden)
-        result = Activation('sigmoid')(logit)
+        #result = Activation('sigmoid')(logit)
 
         if with_aux:
             aux_result = Dense(num_aux_targets, activation='sigmoid')(hidden)
-            model = Model(inputs=words, outputs=[result, aux_result])
+            model = Model(inputs=words, outputs=[logit, aux_result])
             model.compile(loss=[loss, 'binary_crossentropy'], optimizer='adam', loss_weights=[1., 1.], metrics=metrics)
         else:
-            model = Model(inputs=words, outputs=result)
+            model = Model(inputs=words, outputs=logit)
             model.compile(loss=loss, optimizer='adam', metrics=metrics)
 
 
@@ -820,17 +823,21 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                                                            loss=binary_crossentropy_with_focal, metrics=[binary_crossentropy, mean_absolute_error,])
                 else:
                     model = self.build_lstm_model_customed(0, None, self.embedding_layer, with_aux=False,
-                                                           metrics=[ mean_absolute_error,])
+                                                           metrics=[mean_absolute_error,])
             else:
+                logger.debug('using loss=binary_crossentropy_with_focal_seasoned')
                 model = self.build_lstm_model_customed(len(self.train_y_aux[0]), None, self.embedding_layer,
                                                        with_aux=True,
-                                                       loss=binary_crossentropy_with_focal,
+                                                       loss=binary_crossentropy_with_focal_seasoned,
                                                        metrics=[binary_crossentropy, mean_absolute_error])
             self.model = model
+            model.summary()
             logger.info('build model -> done')
 
         else:
-            model = load_model(h5_file, custom_objects={'binary_crossentropy_with_focal': binary_crossentropy_with_focal, 'AttentionRaffel':AttentionRaffel})
+            model = load_model(h5_file, custom_objects={'binary_crossentropy_with_focal_seasoned': binary_crossentropy_with_focal_seasoned,
+                                                        'binary_crossentropy_with_focal': binary_crossentropy_with_focal,
+                                                        'AttentionRaffel':AttentionRaffel})
             starter_lr = starter_lr * LEARNING_RATE_DECAY_PER_EPOCH ** (EPOCHS)
             self.model = model
             logger.debug('restore from the model file {} -> done\n\n\n'.format(h5_file))
@@ -1589,6 +1596,16 @@ def binary_auc_probability(y_true, y_pred, threshold=0.5, N_MORE=True, epsilon=1
     #    raise NotImplementedError("Balanced accuracy metric is not implemented")
 
     # return m
+def binary_crossentropy_with_focal_seasoned(y_true, logit_pred, beta=FOCAL_LOSS_BETA_NEG_POS, gamma=FOCAL_LOSS_GAMMA_NEG_POS, alpha=ALPHA, custom_weights_in_y_true=True):  # 0.5 means no rebalance
+    """
+    :param alpha:weight for positive classes **loss**. default to 1- true positive cnts / all cnts, alpha range [0,1] for class 1 and 1-alpha
+        for calss -1.   In practiceαmay be set by inverse class freqency or hyperparameter.
+    :param custom_weights_in_y_true:
+    :return:
+    """
+    balanced = gamma*logit_pred + beta
+    y_pred = math_ops.sigmoid(balanced)
+    return binary_crossentropy_with_focal(y_true, y_pred, gamma=0, alpha=alpha, custom_weights_in_y_true=custom_weights_in_y_true)  # only use gamma in this layer, easier to split out factor
 
 
 def binary_crossentropy_with_focal(y_true, y_pred, gamma=FOCAL_LOSS_GAMMA, alpha=ALPHA, custom_weights_in_y_true=True):  # 0.5 means no rebalance
@@ -1615,7 +1632,6 @@ def binary_crossentropy_with_focal(y_true, y_pred, gamma=FOCAL_LOSS_GAMMA, alpha
     #       bce = target * alpha* (1-output+epsilon())**gamma * math_ops.log(output + epsilon())
     #       bce += (1 - target) *(1-alpha)* (output+epsilon())**gamma * math_ops.log(1 - output + epsilon())
     # return -bce # binary cross entropy
-
     eps = tf.keras.backend.epsilon()
 
     if custom_weights_in_y_true:
