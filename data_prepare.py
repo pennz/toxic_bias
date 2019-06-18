@@ -390,7 +390,11 @@ class BiasBenchmark:
     def calculate_overall_auc(df, model_name):
         true_labels = df[TARGET_COLUMN]
         predicted_labels = df[model_name]
-        return metrics.roc_auc_score(true_labels, predicted_labels)
+        try:
+            return metrics.roc_auc_score(true_labels, predicted_labels)
+        except ValueError:
+            lstm.logger('might be wrong')
+            return 0.5  # bad
 
     @staticmethod
     def calculate_overall_auc_distribution(df, model_name):

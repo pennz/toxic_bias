@@ -67,14 +67,14 @@ ALPHA = 0.91
 PRD_ONLY = True  # will not train the model
 NOT_PRD = True
 FINAL_SUBMIT = True
-FINAL_DEBUG = True
+FINAL_DEBUG = False
 if FINAL_SUBMIT:
     TARGET_RUN = "lstm"
     EPOCHS = 6
     PRD_ONLY = False  # not training
     NOT_PRD = False  # prd submission test
     RESTART_TRAIN = False
-    FOCAL_LOSS_GAMMA = -1.
+    FOCAL_LOSS_GAMMA = -0.5
 
     DEBUG = False
     if FINAL_DEBUG:
@@ -811,7 +811,6 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 
         starter_lr = params.get('starter_lr', STARTER_LEARNING_RATE)
         # model thing
-        set_trace()
         if re_train or not os.path.isfile(h5_file):
             logger.debug(f're_train is {re_train}, file {h5_file} exists? {os.path.isfile(h5_file)}')
 
@@ -841,6 +840,8 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             self.check_preds_in_val(pred, val_mask, run_times=0)
 
         run_times = 0
+        better_run_times = 0
+        final_score = 0
         for fold in range(n_splits):
             #K.clear_session()  # so it will start over
             if fold > 0:
@@ -883,6 +884,16 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                               prog_bar_logger
                           ])
 
+            pred = model.predict(val_X, verbose=2, batch_size=BATCH_SIZE)
+            final_score_this_run = self.check_preds_in_val(pred, val_mask, run_times=run_times)
+            improve_flag = False
+            if final_score_this_run > final_score:
+                final_score = final_score_this_run
+                improve_flag = True
+            else:
+                improve_flag = False
+
+
             if not NOT_PRD:
                 #if final_train:
                 test_result = model.predict(self.to_predict_X_all, verbose=2)
@@ -893,13 +904,11 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                     test_result_column = np.array(test_result[0]).ravel()  # the shape of preds, is [0] is the predict,[1] for aux
                 self.save_result(test_result_column, filename=f'submission_split_{run_times}.csv')
 
-                test_preds += test_result_column
-                test_preds_avg = test_preds / run_times
-                self.save_result(test_preds_avg)  # save everything in case failed in some folds
-
-                #elif train_test_split:
-            pred = model.predict(val_X, verbose=2, batch_size=BATCH_SIZE)
-            self.check_preds_in_val(pred, val_mask, run_times=run_times+1)
+                if improve_flag:
+                    better_run_times += 1
+                    test_preds += test_result_column
+                    test_preds_avg = test_preds / better_run_times
+                    self.save_result(test_preds_avg)  # save everything in case failed in some folds
 
     def check_preds_in_val(self, pred, val_mask, run_times=0):
         if not NO_AUX:
@@ -915,7 +924,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             dstr = self.target_analyzer.get_err_distribution(self.train_df, val_mask)
             for k, v in dstr.items():
                 logger.debug(f'error info: {k}, {v[1]}')
-        self.calculate_metrics_and_print(filename_for_print=f'metrics_log_{run_times}.txt', validate_df_with_preds=kernel.train_df[val_mask], benchmark_base=kernel.train_df[val_mask])
+        return self.calculate_metrics_and_print(filename_for_print=f'metrics_log_{run_times}.txt', validate_df_with_preds=kernel.train_df[val_mask], benchmark_base=kernel.train_df[val_mask])
 #        test_preds /= run_times
 #        self.save_result(test_preds)
 
@@ -1446,6 +1455,8 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         file_for_print.close()
         file_for_print = open(filename_for_print, 'r')
         print(file_for_print.read())
+
+        return value  # final value
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--batch_size', default=32, type=int, help='batch size')
