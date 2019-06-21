@@ -7,6 +7,7 @@ from tensorflow import Session, Graph
 
 from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.layers import Layer
+from tensorflow.keras.layers import Lambda
 from tensorflow.keras.layers import Input, Dense, Embedding, SpatialDropout1D, add, concatenate, BatchNormalization, Activation
 from tensorflow.keras.layers import CuDNNLSTM, Bidirectional, GlobalMaxPooling1D, GlobalAveragePooling1D, PReLU
 from tensorflow.keras.optimizers import Adam
@@ -39,7 +40,7 @@ RES_DENSE_HIDDEN_UNITS = 5
 
 EPOCHS = 7  # 4 seems good for current setting, more training will help for the final score?
 
-DEBUG = False
+DEBUG_TRACE = False
 ## all for debug
 preds = None
 kernel = None
@@ -63,31 +64,33 @@ Y_TRAIN_BIN = False  # with True, slightly worse
 FOCAL_LOSS = True
 
 FOCAL_LOSS_GAMMA = 0.
-FOCAL_LOSS_GAMMA_NEG_POS = 0.5
-FOCAL_LOSS_BETA_NEG_POS = 0.5
-ALPHA = 0.91
+FOCAL_LOSS_GAMMA_NEG_POS = 0.25
+FOCAL_LOSS_BETA_NEG_POS = 1.
+#ALPHA = 0.91
+ALPHA = 0.5
 PRD_ONLY = True  # will not train the model
 NOT_PRD = True
 FINAL_SUBMIT = True
-FINAL_DEBUG = False
+FINAL_DEBUG = True
 if FINAL_SUBMIT:
     TARGET_RUN = "lstm"
     EPOCHS = 6
     PRD_ONLY = False  # not training
     NOT_PRD = False  # prd submission test
-    RESTART_TRAIN = False
+    RESTART_TRAIN = True
     FOCAL_LOSS_GAMMA = 0.0
 
-    DEBUG = False
+    DEBUG_TRACE = False
+
     if FINAL_DEBUG:
-        DEBUG = True
+        EPOCHS = 4
+        DEBUG_TRACE = False
         PRD_ONLY = False  # not training if True
         RESTART_TRAIN = False
         NOT_PRD = True  # prd submission test
         NUM_MODELS = 1  # might timeout, so back to 2
         STARTER_LEARNING_RATE = 1e-3
         Y_TRAIN_BIN = False
-        FOCAL_LOSS_GAMMA = -1.
 
 from tensorflow.keras import initializers, regularizers, constraints
 
@@ -414,7 +417,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         mask[self.identity_idx] = 0  # identities data excluded first ( will add some back later)
 
         # need get more 80, 000 normal ones without identities, 40,0000 %40 with identities, 4*0.4/12, 0.4/3 13%
-        add_no_identity_to_val = self.train_df[mask].sample(n=int(8e4))
+        add_no_identity_to_val = self.train_df[mask].sample(n=int(8e4), random_state=2019)
         add_no_identity_to_val_idx = add_no_identity_to_val.index
         mask[add_no_identity_to_val_idx] = 0  # exclude from train, add to val
 
@@ -702,14 +705,15 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             hidden = add([hidden, Dense(DENSE_HIDDEN_UNITS, activation=activate_type)(hidden)])
 
         logit = Dense(1, activation=None)(hidden)
-        #result = Activation('sigmoid')(logit)
+        logit = Lambda(lambda pre_sigmoid: FOCAL_LOSS_GAMMA_NEG_POS*pre_sigmoid+FOCAL_LOSS_BETA_NEG_POS)(logit)
+        result = Activation('sigmoid')(logit)
 
         if with_aux:
             aux_result = Dense(num_aux_targets, activation='sigmoid')(hidden)
-            model = Model(inputs=words, outputs=[logit, aux_result])
-            model.compile(loss=[loss, 'binary_crossentropy'], optimizer='adam', loss_weights=[1., 1.], metrics=metrics)
+            model = Model(inputs=words, outputs=[result, aux_result])
+            model.compile(loss=[loss, 'binary_crossentropy'], optimizer='adam', loss_weights=[1., 0.25], metrics=metrics)
         else:
-            model = Model(inputs=words, outputs=logit)
+            model = Model(inputs=words, outputs=result)
             model.compile(loss=loss, optimizer='adam', metrics=metrics)
 
 
@@ -768,7 +772,8 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         prefix = params['prefix']
         re_train = params['re-start-train']
         predict_only = params['predict-only']
-        sample_weights = params.get('sample_weights')
+        logger.debug(f"pred only? {predict_only}\n\n\n")
+        #sample_weights = params.get('sample_weights')
         train_data = params.get('train_data', None)
         train_y_aux_passed = params.get('train_y_aux')
         val_y_aux_passed = params.get('val_y_aux')
@@ -814,13 +819,15 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 
         starter_lr = params.get('starter_lr', STARTER_LEARNING_RATE)
         # model thing
+        load_from_model = False
         if re_train or not os.path.isfile(h5_file):
             logger.debug(f're_train is {re_train}, file {h5_file} exists? {os.path.isfile(h5_file)}')
 
             if NO_AUX:
                 if FOCAL_LOSS:
                     model = self.build_lstm_model_customed(0, None, self.embedding_layer, with_aux=False,
-                                                           loss=binary_crossentropy_with_focal, metrics=[binary_crossentropy, mean_absolute_error,])
+                                                           loss=binary_crossentropy_with_focal,
+                                                           metrics=[binary_crossentropy, mean_absolute_error,])
                 else:
                     model = self.build_lstm_model_customed(0, None, self.embedding_layer, with_aux=False,
                                                            metrics=[mean_absolute_error,])
@@ -828,21 +835,22 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                 logger.debug('using loss=binary_crossentropy_with_focal_seasoned')
                 model = self.build_lstm_model_customed(len(self.train_y_aux[0]), None, self.embedding_layer,
                                                        with_aux=True,
-                                                       loss=binary_crossentropy_with_focal_seasoned,
+                                                       loss=binary_crossentropy_with_focal,
                                                        metrics=[binary_crossentropy, mean_absolute_error])
             self.model = model
             model.summary()
-            logger.info('build model -> done')
+            logger.info('build model -> done\n\n\n')
 
         else:
             model = load_model(h5_file, custom_objects={'binary_crossentropy_with_focal_seasoned': binary_crossentropy_with_focal_seasoned,
                                                         'binary_crossentropy_with_focal': binary_crossentropy_with_focal,
                                                         'AttentionRaffel':AttentionRaffel})
+            load_from_model = True
             starter_lr = starter_lr * LEARNING_RATE_DECAY_PER_EPOCH ** (EPOCHS)
             self.model = model
             logger.debug('restore from the model file {} -> done\n\n\n'.format(h5_file))
 
-        if FINAL_DEBUG:
+        if FINAL_DEBUG and load_from_model:
             pred = model.predict(val_X, verbose=2, batch_size=BATCH_SIZE)
             self.check_preds_in_val(pred, val_mask, run_times=0)
 
@@ -874,8 +882,8 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                           #validation_split=val_split,
                           batch_size=BATCH_SIZE,
                           epochs=EPOCHS,
-                          sample_weight=sample_weights,
-                          # steps_per_epoch=int(len(self.train_X)*0.95/BATCH_SIZE),
+                          #sample_weight=sample_weights,
+                          # steps_per_epoch=int(len(self.train_X)*False95/BATCH_SIZE),
                           verbose=0, # prog_bar_logger will handle log, so set to 0 here
                           # validation_data=(self.train_X[val_ind], self.train_y[val_ind]>0.5),
                           validation_data=(val_X, val_labels),
@@ -887,7 +895,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                                   verbose=1
                               ),
                               early_stop,
-                              #ckpt,
+                              ckpt,
                               prog_bar_logger
                           ])
 
@@ -912,16 +920,21 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
                 self.save_result(test_result_column, filename=f'submission_split_{run_times}.csv')
 
                 if improve_flag:
+                    logger.debug("better this time, will update submission.csv\n\n\n")
                     better_run_times += 1
                     test_preds += test_result_column
                     test_preds_avg = test_preds / better_run_times
                     self.save_result(test_preds_avg)  # save everything in case failed in some folds
 
     def check_preds_in_val(self, pred, val_mask, run_times=0):
+        if DEBUG_TRACE: set_trace()
         if not NO_AUX:
             preds = np.array(pred[0]).ravel()
         else:
             preds = np.array(pred).ravel()
+
+        if DEBUG_TRACE: set_trace()
+        #preds = 1 / (1+np.exp(-preds))
 
         self.train_df.loc[val_mask, 'lstm'] = preds
         if True:
@@ -1137,7 +1150,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 #            if not FINAL_SUBMIT:
             logger.debug("Use 90% identity data")  # in test set, around 10% data will be with identities (lower than training set)
             id_df = self.train_df.loc[self.identity_idx]
-            id_train_df = id_df.sample(frac=0.9)  # 40,000 remained for val
+            id_train_df = id_df.sample(frac=0.9, random_state=2019)  # 40,000 remained for val
             id_train_df_idx = id_train_df.index
 #            else:  # we still need these ... for the early stop thing!!!
 #                logger.debug("Use 100% identity data")  # in test set, around 10% data will be with identities (lower than training set)
@@ -1227,10 +1240,10 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 
             if balance_AUC == 'more_bp_sn':
                 #self.train_df, contains all info
-                benchmark_base = self.train_df[d.IDENTITY_COLUMNS + [d.TOXICITY_COLUMN, d.TEXT_COLUMN]].fillna(0).astype(np.bool)
+                benchmark_base = self.train_df[d.IDENTITY_COLUMNS + [d.TARGET_COLUMN, d.TEXT_COLUMN]].fillna(0).astype(np.bool)
                 judge = d.BiasBenchmark(benchmark_base, threshold=0.5)  # the idx happen to be the iloc value
                 id_validate_df = judge.validate_df  # converted to binary in judge initailization function
-                toxic_bool_col = id_validate_df[d.TOXICITY_COLUMN]
+                toxic_bool_col = id_validate_df[d.TARGET_COLUMN]
                 contain_identity_bool_col = id_validate_df[d.IDENTITY_COLUMNS].any(axis=1)
 
                 weights_auc_balancer = ones_weights.copy() / 4
@@ -1278,6 +1291,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
             # credit to https://www.kaggle.com/tanreinama/simple-lstm-using-identity-parameters-solution
             if sample_weights is None:
                 raise RuntimeError('sample weights cannot be None if use custom_weights')
+            assert len(train_y_all) == len(sample_weights)
             if with_aux:
                 return train_X, val_X, np.vstack([train_y_all, sample_weights]).T[train_mask], train_y_aux[train_mask], train_y_all[val_mask], train_y_aux[val_mask]
             else:
@@ -1733,9 +1747,10 @@ def main(argv):
                 pass
             else:
                 sample_weights = kernel.prepare_weight_for_subgroup_balance()
-                sample_weights_train = sample_weights[kernel.train_mask]
+                #sample_weights_train = sample_weights[kernel.train_mask]
                 #pickle.dump(val_mask, open("val_mask", 'wb'))  # only the ones with identity is predicted
                 val_mask = np.invert(kernel.train_mask)
+                sample_weights[val_mask] = 1.  # val..., no need to weight changing
 
                 train_X = None
                 val_X = None
@@ -1752,7 +1767,7 @@ def main(argv):
                                                      with_aux=True,
                                                      train_y_aux=kernel.train_y_aux_all,
                                                      sample_weights=sample_weights, fortify_subgroup=None)
-                sample_weights_train = None  # no need to use in fit, will cooperate to the custom loss function
+                #sample_weights_train = None  # no need to use in fit, will cooperate to the custom loss function
                 logger.debug(f'train with {len(train_X)} data entries')
                 logger.debug(f'prefix: {prefix}')
                 preds = kernel.run_lstm_model(predict_ones_with_identity=True, final_train=FINAL_SUBMIT, params={
@@ -1760,7 +1775,7 @@ def main(argv):
                     're-start-train': RESTART_TRAIN, # will retrain every time if True,restore will report sensitivity problem now
                     'predict-only': predict_only,
                     'starter_lr': STARTER_LEARNING_RATE,
-                    'sample_weights': sample_weights_train,
+                    #'sample_weights': sample_weights_train,
                     'train_data': (train_X, train_y),   # train data with identities
                     'train_y_aux': train_y_aux,
                     'val_y_aux': val_y_aux,
@@ -1793,7 +1808,7 @@ def main(argv):
 
 BALANCE_SCHEME_SUBGROUPS = 'target_bucket_same_for_subgroups' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
 BALANCE_SCHEME_ACROSS_SUBGROUPS = 'more_for_low_score'  # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
-BALANCE_SCHEME_AUC = 'no_more_bp_sn'
+BALANCE_SCHEME_AUC = 'more_bp_sn'
 #balance_scheme_target_splits = 'target_bucket_same_for_target_splits' # or 1->0.8 slop or 0.8->1, or y=-(x-1/2)^2+1/4; just test
 BALANCE_SCHEME_TARGET_SPLITS = 'no_target_bucket_extreme_positive'  # not work, because manual change will corrupt orignial information?
 
