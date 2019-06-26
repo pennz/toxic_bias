@@ -780,7 +780,7 @@ class EmbeddingHandler:
     def E_M_FILE(self):
         return self.BIN_FOLDER+"embedding.mat"
 
-    def read_train_test(self, train_only=False):
+    def read_train_test_df(self, train_only=False):
         if self.train_df is None:
             try:
                 self.train_df = pd.read_csv(self.INPUT_DATA_DIR + 'train.csv')
@@ -903,7 +903,7 @@ class EmbeddingHandler:
 
     def get_identity_df(self):
         if not self._text_preprocessed: # then we might be restore from numpy pickle file, so still need to read csv
-            self.read_train_test()
+            self.read_train_test_df()
             #for column in IDENTITY_COLUMNS :
             #    # it seems the .values will make a copy out, so it won't infect above sef.y_train
             #    self.train_df[column] = np.where(self.train_df[column] >= 0.5, True, False)
@@ -980,7 +980,7 @@ class EmbeddingHandler:
             path = filename
         return os.path.isfile(path)
 
-    def build_matrix_modify_comment(self, path, emb_matrix_exsited):
+    def build_matrix_modify_comment(self, path, emb_matrix_existed):
         """
         build embedding matrix given tokenizer word_index and pre-trained embedding file
 
@@ -989,8 +989,8 @@ class EmbeddingHandler:
         :return: embedding matrix
         """
         lstm.logger.debug(f'{path} is being processed')
-        if emb_matrix_exsited:
-            lstm.logger.debug("Start cooking embedding matrix and train/test data: only train/test data")
+        if emb_matrix_existed:
+            lstm.logger.debug("Start cooking embedding matrix and train/test data: only train/test data, emb_matrix existed")
             self.text_preprocess()
             return  # only need process text
 
@@ -1063,8 +1063,10 @@ class EmbeddingHandler:
             return dict(EmbeddingHandler.get_coefs(*line.strip().split(' ')) for line in f)
 
     def prepare_tfrecord_data(self, dump=True, train_test_data=True, embedding=True, action=None):  # 和上一级有耦合，先这样吧
+        set_trace()
         if action is not None and action == lstm.CONVERT_DATA_Y_NOT_BINARY:  # unpicker, change y
-            self.read_train_test(train_only=True)
+            # only convert data y not binary
+            self.read_train_test_df(train_only=True)
             if not os.path.isfile(DATA_FILE_FLAG):
                 raise FileNotFoundError("Pickle files should be present")
 
@@ -1079,7 +1081,7 @@ class EmbeddingHandler:
                     f.write(bytes("", 'utf-8'))
             return self.x_train, self.y_train, self.y_aux_train, self.x_test, self.embedding_matrix
 
-        self.read_train_test()
+        self.read_train_test_df()
 
         if os.path.isfile(DATA_FILE_FLAG) and not self.do_emb_matrix_preparation and not train_test_data and not embedding:
             # just recover from record file
@@ -1088,7 +1090,7 @@ class EmbeddingHandler:
         if embedding:
             lstm.logger.debug("Still need build embedding matrix")
             self.embedding_matrix = np.concatenate(
-                [self.build_matrix_modify_comment(f, emb_matrix_exsited=False) for f in EMBEDDING_FILES], axis=-1)
+                [self.build_matrix_modify_comment(f, emb_matrix_existed=False) for f in EMBEDDING_FILES], axis=-1)
             del self.tokenizer
             if dump:
                 if embedding:
@@ -1097,7 +1099,9 @@ class EmbeddingHandler:
             self.tokenizer = None
         elif train_test_data:  # no need to rebuild emb matrix, only need train test data
             f = EMBEDDING_FILES[0]
-            self.build_matrix_modify_comment(f, emb_matrix_exsited=True)
+            if action is not None and action == lstm.CONVERT_ADDITIONAL_NONTOXIC_DATA:  # unpicker, change y
+                set_trace()
+            self.build_matrix_modify_comment(f, emb_matrix_existed=True)
 
         # create an embedding_matrix
         # after this, embedding_matrix is a matrix of size
@@ -1162,7 +1166,7 @@ class EmbeddingHandler:
 
             if action is not None:  # exist data, need to convert data
                 lstm.logger.debug(action)
-                if action == lstm.CONVERT_TRAIN_DATA:
+                if action == lstm.CONVERT_TRAIN_DATA or action == lstm.CONVERT_ADDITIONAL_NONTOXIC_DATA:
                     self.prepare_tfrecord_data(train_test_data=True, embedding=False, action=action) # train data will rebuild, so we put it before read from pickle
 
             try:
@@ -1201,7 +1205,7 @@ class EmbeddingHandler:
         else:
             lstm.logger.debug(self.DATA_TRAIN_FILE)
             # (x_train, y_train, y_aux_train), x_test = prepare_tfrecord_data()
-            if action is not None and action == lstm.CONVERT_TRAIN_DATA:
+            if action is not None and (action == lstm.CONVERT_TRAIN_DATA or action == lstm.CONVERT_ADDITIONAL_NONTOXIC_DATA):
                 self.embedding_matrix = pickle.load(open(self.E_M_FILE, "rb"))
                 lstm.logger.debug("Only build train test data, embedding loaded from pickle")
                 return self.prepare_tfrecord_data(embedding=False, action=action)

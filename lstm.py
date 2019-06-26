@@ -70,7 +70,7 @@ FOCAL_LOSS_BETA_NEG_POS = 1.
 ALPHA = 0.5
 PRD_ONLY = True  # will not train the model
 NOT_PRD = True
-FINAL_SUBMIT = True
+FINAL_SUBMIT = False
 FINAL_DEBUG = True
 if FINAL_SUBMIT:
     TARGET_RUN = "lstm"
@@ -395,7 +395,7 @@ class KaggleKernel:
     def load_data(self, action):
         if self.emb is None:
             self.emb = d.EmbeddingHandler()
-        self.emb.read_train_test(train_only=False)
+        self.emb.read_train_test_df(train_only=False)
         self.train_df = self.emb.train_df
 
         if PRD_ONLY or TARGET_RUN_READ_RESULT or ANA_RESULT:
@@ -950,7 +950,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
 
     def save_result(self, predictions, filename=None):
         if self.emb.test_df_id is None:
-            self.emb.read_train_test()
+            self.emb.read_train_test_df()
         submission = pd.DataFrame.from_dict({
             'id': self.emb.test_df_id,
             # 'id': test_df.id,
@@ -1392,7 +1392,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
     def calculate_metrics_and_print(self, filename_for_print='metrics_log.txt', preds=None, threshold=0.5, validate_df_with_preds=None, model_name='lstm', detail=True, benchmark_base=None):
         file_for_print = open(filename_for_print, 'w')
 
-        self.emb.read_train_test(train_only=True)
+        self.emb.read_train_test_df(train_only=True)
         self.load_identity_data_idx()
         if benchmark_base is None:
             benchmark_base = self.train_df.loc[self.identity_idx]
@@ -1496,9 +1496,10 @@ parser.add_argument('--learning_rate', default=0.001, type=float,
 
 # _debug_train_data = None
 
-CONVERT_DATA = False
+CONVERT_DATA = True
 CONVERT_DATA_Y_NOT_BINARY = 'convert_data_y_not_binary'
 CONVERT_TRAIN_DATA = 'convert_train_data'  # given the pickle of numpy train data
+CONVERT_ADDITIONAL_NONTOXIC_DATA = 'CONVERT_ADDITIONAL_NONTOXIC_DATA'  # given the pickle of numpy train data
 
 EXCLUDE_IDENTITY_IN_TRAIN = True
 TRAIN_DATA_EXCLUDE_IDENDITY_ONES = 'TRAIN_DATA_EXCLUDE_IDENDITY_ONES'
@@ -1682,12 +1683,14 @@ def main(argv):
     if CONVERT_DATA:
         # action = TRAIN_DATA_EXCLUDE_IDENDITY_ONES
         #action = CONVERT_DATA_Y_NOT_BINARY
-        action = CONVERT_TRAIN_DATA  # given the pickle of numpy train data
+        #action = CONVERT_TRAIN_DATA  # given the pickle of numpy train data
+        action = CONVERT_ADDITIONAL_NONTOXIC_DATA  # given the pickle of numpy train data
     else:
         if EXCLUDE_IDENTITY_IN_TRAIN and not IDENTITY_RUN:  # for identity, need to predict for all train data
             action = TRAIN_DATA_EXCLUDE_IDENDITY_ONES
     #if not (RESTART_TRAIN or RESTART_TRAIN_ID or RESTART_TRAIN_RES):
     #    action = DATA_ACTION_NO_NEED_LOAD_EMB_M  # loading model from h5 file, no need load emb matrix (save memory)
+    set_trace()
     if FINAL_SUBMIT:
         kernel = KaggleKernel(action=None)
     else:
