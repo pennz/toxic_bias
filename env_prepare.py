@@ -49,14 +49,14 @@ def pip_install_thing():
 def upload_file_one_at_a_time(file_name, saved_name=None):
     if not saved_name:
         saved_name = file_name.split('/')[-1]
-    run_process_print("curl  --header \"File-Name:{1}\" --data-binary @{0} http://97.64.108.66:8001".format(file_name, saved_name))
+    run_process_print("curl  --header \"File-Name:{1}\" --data-binary @{0} http://23.105.212.181:8001".format(file_name, saved_name))
     #print("You need to goto VPS and change filename")
 
 def download_file_one_at_a_time(file_name, directory=".", overwrite=False):
     if overwrite:
-        run_process_print("wget http://97.64.108.66:8000/{0} -O \"{1}/{0}\"".format(file_name, directory))
+        run_process_print("wget http://23.105.212.181:8000/{0} -O \"{1}/{0}\"".format(file_name, directory))
     else:
-        run_process_print("[ -f {1}/{0} ] || wget http://97.64.108.66:8000/{0} -P {1}".format(file_name, directory))
+        run_process_print("[ -f {1}/{0} ] || wget http://23.105.212.181:8000/{0} -P {1}".format(file_name, directory))
 
 #upload_file_one_at_a_time("env_prepare.py")
 
@@ -157,32 +157,35 @@ def exit00():
     os._exit(00)  # will make ipykernel restart
 
 quick = True
-if os.getcwd().find('lstm') > 0:
-    #upload_file_one_at_a_time("data_prepare.py")
-    setup_gdrive()
-else:
-    #do_gc()
-    if not os.path.isfile('.env_setup_done'):
-        try:
-            mount_gdrive()
-        except ModuleNotFoundError:
-            setup_gdrive()
-            #download_lstm_from_gdrive()
 
-        if not quick:
-            if not os.path.isdir("../input") and not os.path.isdir('/content/gdrivedata/My Drive/'):
-                setup_kaggle()
-                download_kaggle_data()
-                list_submisstion()
-            pip_install_thing()
-        #run_process_print('export PATH=$PWD:$PATH') # not helpful, subshell
-        run_process_print('touch .env_setup_done')
+setup_gdrive()
 
-up()  # this is needed always
+#if os.getcwd().find('lstm') > 0:
+#    #upload_file_one_at_a_time("data_prepare.py")
+#    setup_gdrive()
+#else:
+#    #do_gc()
+#    if not os.path.isfile('.env_setup_done'):
+#        try:
+#            mount_gdrive()
+#        except ModuleNotFoundError:
+#            setup_gdrive()
+#            #download_lstm_from_gdrive()
+#
+#        if not quick:
+#            if not os.path.isdir("../input") and not os.path.isdir('/content/gdrivedata/My Drive/'):
+#                setup_kaggle()
+#                download_kaggle_data()
+#                list_submisstion()
+#            pip_install_thing()
+#        #run_process_print('export PATH=$PWD:$PATH') # not helpful, subshell
+#        run_process_print('touch .env_setup_done')
+#
+#up()  # this is needed always
 
 
 #get_ipython().reset()  # run in ipython
-#!wget http://97.64.108.66:8000/lstm.py -O lstm.py && wget http://97.64.108.66:8000/data_prepare.py -O data_prepare.py && python lstm.py
+#!wget http://23.105.212.181:8000/lstm.py -O lstm.py && wget http://23.105.212.181:8000/data_prepare.py -O data_prepare.py && python lstm.py
 # https://drive.google.com/file/d/1A3vj6mBUTGYnvd4HfDyI9hBT78IWyABf/view?usp=sharing
 # https://drive.google.com/open?id=1V651fAb8_RxDF--VfHWlUQ8wTzULPPyu
 # https://drive.google.com/open?id=144glCjAb6rTJXNddslpc-mgQBCGGybTr

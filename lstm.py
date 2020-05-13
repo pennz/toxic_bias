@@ -23,12 +23,13 @@ from sklearn.model_selection import KFold
 import data_prepare as d
 import os
 import pickle
-import logging
 import copy
 
 from IPython.core.debugger import set_trace
 from tensorflow.python import debug as tf_debug
 import gc
+
+import utils
 
 NUM_MODELS = 2  # might be helpful but...
 
@@ -51,7 +52,7 @@ y_res_pred = None
 STARTER_LEARNING_RATE = 1e-3 # as the BCE we adopted...
 LEARNING_RATE_DECAY_PER_EPOCH = 0.5
 
-IDENTITY_RUN = False
+IDENTITY_RUN = True
 TARGET_RUN = "lstm"
 TARGET_RUN_READ_RESULT = False
 RESTART_TRAIN = False
@@ -202,16 +203,6 @@ class AttentionRaffel(Layer):
     def compute_output_shape(self, input_shape):
         # return input_shape[0], input_shape[-1]
         return input_shape[0], self.features_dim
-
-
-def get_logger():
-    FORMAT = '[%(levelname)s]%(asctime)s:%(name)s:%(message)s'
-    logging.basicConfig(format=FORMAT)
-    logger = logging.getLogger('main')
-    logger.setLevel(logging.DEBUG)
-    return logger
-
-logger = get_logger()
 
 
 def identity_model(features, labels, mode, params):
@@ -618,6 +609,7 @@ BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, EPOCHS {EPOCHS}, Y_
         return model
 
     def run_identity_model(self, subgroup, features, labels, params):
+        set_trace()
 
         prefix = params['prefix']
         file_name = f'{prefix}_{subgroup}_0.hdf5'
@@ -1496,7 +1488,7 @@ parser.add_argument('--learning_rate', default=0.001, type=float,
 
 # _debug_train_data = None
 
-CONVERT_DATA = True
+CONVERT_DATA = False
 CONVERT_DATA_Y_NOT_BINARY = 'convert_data_y_not_binary'
 CONVERT_TRAIN_DATA = 'convert_train_data'  # given the pickle of numpy train data
 CONVERT_ADDITIONAL_NONTOXIC_DATA = 'CONVERT_ADDITIONAL_NONTOXIC_DATA'  # given the pickle of numpy train data
@@ -1690,7 +1682,6 @@ def main(argv):
             action = TRAIN_DATA_EXCLUDE_IDENDITY_ONES
     #if not (RESTART_TRAIN or RESTART_TRAIN_ID or RESTART_TRAIN_RES):
     #    action = DATA_ACTION_NO_NEED_LOAD_EMB_M  # loading model from h5 file, no need load emb matrix (save memory)
-    set_trace()
     if FINAL_SUBMIT:
         kernel = KaggleKernel(action=None)
     else:
@@ -1708,19 +1699,31 @@ def main(argv):
         for idtt in d.IDENTITY_COLUMNS:
         #for idtt in ['male', 'female', 'homosexual_gay_or_lesbian', 'christian', 'jewish','muslim', 'black', 'white', 'psychiatric_or_mental_illness'][6:]:
             if PRD_ONLY:
-                kernel.run_identity_model(idtt, kernel.to_predict_X_all, None, params={
-                    'prefix': prefix,
-                    'starter_lr': STARTER_LEARNING_RATE,
-                    'epochs': 8,
-                    'patience': 2,
-                    'lr_decay': 0.5,
-                    'validation_split': 0.05,
-                    'no_check_point': False,  # save check point or not
-                    'verbose': 2,
-                    'continue_train': False,  # just predict, do not train this time
-                    'predict_only': True
-                })
-            else:
+                #to_predict = kernel.to_predict_X_all
+                to_predict_all = utils.get_obj_and_save('additional_data.bin')
+                len_all = len(to_predict_all)
+                one_len = int(len_all // 10)
+                id_additional_pred = []
+                for i in range(10):
+                    to_predict = kernel.emb._prepare_additional_data_pad(to_predict_all[one_len*i:one_len*(i+1)])
+
+                    set_trace()
+                    id_pred=kernel.run_identity_model(idtt, to_predict, None, params={
+                        'prefix': prefix,
+                        'starter_lr': STARTER_LEARNING_RATE,
+                        'epochs': 8,
+                        'patience': 2,
+                        'lr_decay': 0.5,
+                        'validation_split': 0.05,
+                        'no_check_point': False,  # save check point or not
+                        'verbose': 2,
+                        'continue_train': False,  # just predict, do not train this time
+                        'predict_only': True
+                    })
+                    id_additional_pred = id_additional_pred+id_pred
+                    del to_predict
+                utils.dump_obj(id_additional_pred, f'{idtt}_additional_pred')
+            else:  # train
                 kernel.run_identity_model(idtt, kernel.train_X_identity, kernel.train_y_identity, params={
                     'prefix': prefix,
                     'starter_lr': STARTER_LEARNING_RATE,
@@ -1831,6 +1834,7 @@ if os.path.isfile('.ana_result'):
 
 if __name__ == '__main__':
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)
+    logger = utils.logger
     logger.info(
         f'Start run with FL_{FOCAL_LOSS}_{FOCAL_LOSS_GAMMA}_{ALPHA} lr {STARTER_LEARNING_RATE}, decay {LEARNING_RATE_DECAY_PER_EPOCH}, \
 BS {BATCH_SIZE}, NO_ID_IN_TRAIN {EXCLUDE_IDENTITY_IN_TRAIN}, \

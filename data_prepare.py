@@ -9,6 +9,8 @@ from tensorflow.keras.preprocessing import text, sequence
 MAX_LEN = 180  # used in lstm definition ....
 
 import lstm
+import utils
+
 import sklearn
 
 from IPython.core.debugger import set_trace
@@ -393,7 +395,7 @@ class BiasBenchmark:
         try:
             return metrics.roc_auc_score(true_labels, predicted_labels)
         except ValueError:
-            lstm.logger('might be wrong')
+            utils.logger('might be wrong')
             return 0.5  # bad
 
     @staticmethod
@@ -827,7 +829,7 @@ class EmbeddingHandler:
             if word in embedding and word.lower() not in embedding:
                 embedding[word.lower()] = embedding[word]
                 count += 1
-        lstm.logger.debug(f"Added {count} words to embedding")
+        utils.logger.debug(f"Added {count} words to embedding")
 
     def contraction_normalize(self):
         def clean_contractions(text, mapping):
@@ -916,14 +918,18 @@ class EmbeddingHandler:
         train_y_identity_df = self.get_identity_df()
         return self.x_train[train_y_identity_df.index], train_y_identity_df.values, train_y_identity_df.index# non-binary
 
-    def text_preprocess(self, target_binarize=False):
-        lstm.logger.debug("Text preprocessing")
-        if self._text_preprocessed:
-            return  # just run once.... not a good flag
+    def _text_preprocess(self):
         self.spelling_normalize()  # will add 'treated_comment' column to df
         train_len = self.train_df.shape[0]
         self.train_df[TEXT_COLUMN] = self.df['treated_comment'][:train_len]
         self.test_df[TEXT_COLUMN] = self.df['treated_comment'][train_len:]
+
+    def prepare_data(self, target_binarize=False):
+        utils.logger.debug("Text preprocessing")
+        if self._text_preprocessed:
+            return
+
+        self._text_preprocess()
 
         if target_binarize:
             for column in IDENTITY_COLUMNS + AUX_COLUMNS + [TARGET_COLUMN]:
@@ -939,6 +945,7 @@ class EmbeddingHandler:
         # tokenizer = text.Tokenizer(filters=CHARS_TO_REMOVE)
         tokenizer = text.Tokenizer()
         tokenizer.fit_on_texts(list(x_train) + list(x_test))
+
         x_train = tokenizer.texts_to_sequences(x_train)
         x_test = tokenizer.texts_to_sequences(x_test)
         self.x_train = sequence.pad_sequences(x_train, maxlen=self.MAX_LEN)  # longer will be truncated
@@ -946,41 +953,20 @@ class EmbeddingHandler:
 
         self.tokenizer = tokenizer
         self._text_preprocessed = True
-        lstm.logger.debug("Text preprocessing Done")
+        utils.logger.debug("Text preprocessing Done")
 
-    def dump_obj(self, obj, filename, fullpath=False, force=False):
-        if not fullpath:
-            path = self.BIN_FOLDER+filename
-        else:
-            path = filename
-        if not force and os.path.isfile(path):
-            print(f"{path} already existed, not dumping")
-        else:
-            print(f"Overwrite {path}!")
-            pickle.dump(obj, open(path, 'wb'))
 
-    def get_obj_and_save(self, filename, default=None, fullpath=False):
-        if not fullpath:
-            path = self.BIN_FOLDER+filename
-        else:
-            path = filename
-        if os.path.isfile(path):
-            lstm.logger.debug("load :"+filename)
-            return pickle.load(open(path, 'rb'))
-        else:
-            if default is not None:
-                lstm.logger.debug("dump :"+filename)
-                self.dump_obj(default, filename)
-            return default
+    def _prepare_additional_data_pad(self, seqs):
+        return sequence.pad_sequences(seqs, maxlen=self.MAX_LEN)
 
-    def file_exist(self, filename, fullpath=False):
-        if not fullpath:
-            path = self.BIN_FOLDER+filename
-        else:
-            path = filename
-        return os.path.isfile(path)
+    def _prepare_additional_data(self):
+        with open('wikisent2.txt') as f:
+            lines = f.readlines()
+            utils.dump_obj(self.tokenizer, 'tokenizer')
+            lines_seqs = self.tokenizer.texts_to_sequences(lines)
+            utils.dump_obj(lines_seqs, 'additional_data.bin', force=True)
 
-    def build_matrix_modify_comment(self, path, emb_matrix_existed):
+    def build_matrix_prepare_data(self, path, emb_matrix_existed, convert_additional=False):
         """
         build embedding matrix given tokenizer word_index and pre-trained embedding file
 
@@ -988,48 +974,50 @@ class EmbeddingHandler:
         :param path: path to load pre-trained embedding
         :return: embedding matrix
         """
-        lstm.logger.debug(f'{path} is being processed')
         if emb_matrix_existed:
-            lstm.logger.debug("Start cooking embedding matrix and train/test data: only train/test data, emb_matrix existed")
-            self.text_preprocess()
-            return  # only need process text
+            utils.logger.debug("Start cooking embedding matrix and train/test data: only train/test data, emb_matrix existed")
+            self.prepare_data()
+            if convert_additional:
+                self._prepare_additional_data()
+                return  # only need process text
 
-        lstm.logger.debug("Start cooking embedding matrix and train/test data")
+        utils.logger.debug("Start cooking embedding matrix and train/test data")
+        utils.logger.debug(f'{path} is being processed')
 
         if path.find("840B.300d") > 0:
             emb_save_filename = 'matrix_840b'
         if path.find("300d-2M") > 0:
             emb_save_filename = 'matrix_crawl'
 
-        emb_from_file = self.get_obj_and_save(emb_save_filename)
+        emb_from_file = utils.get_obj_and_save(emb_save_filename)
         if emb_from_file is not None:
             return emb_from_file
 
 
-        if not self.file_exist('word_index'):
+        if not utils.file_exist('word_index'):
             self.build_vocab(self.df[TEXT_COLUMN])
-            vocab = self.get_obj_and_save("vocab", self.vocab)  # word to integer value index
-            self.text_preprocess()  # tokenizer processed in this function, not related to embedding
-            lstm.logger.debug('Text processed')
+            vocab = utils.get_obj_and_save("vocab", self.vocab)  # word to integer value index
+            self.prepare_data()  # tokenizer processed in this function, not related to embedding
+            utils.logger.debug('Text processed')
 
             embedding_index = EmbeddingHandler.load_embeddings(path)  # embedding_index is an dict, value is the feature vector
-            lstm.logger.debug(f"loading embedding from {path} done")
+            utils.logger.debug(f"loading embedding from {path} done")
             self.add_lower_to_embedding(embedding_index, vocab)  # will change embedding_index, add lower words in the vocab to this embedding
 
-            word_index = self.get_obj_and_save("word_index", self.tokenizer.word_index)  # word to integer value index
+            word_index = utils.get_obj_and_save("word_index", self.tokenizer.word_index)  # word to integer value index
             embedding_matrix = np.zeros((len(word_index) + 1, 300))  # last one for unknown?
         else:
-            lstm.logger.debug('Restore word index from files')
-            word_index = self.get_obj_and_save("word_index")  # word to integer value index
+            utils.logger.debug('Restore word index from files')
+            word_index = utils.get_obj_and_save("word_index")  # word to integer value index
             try:
-                vocab = self.get_obj_and_save("vocab", self.vocab)  # word to integer value index
+                vocab = utils.get_obj_and_save("vocab", self.vocab)  # word to integer value index
             except FileNotFoundError:
                 vocab = self.vocab
                 if vocab is None:
                     raise RuntimeError('vocab shoule be None, process embedding_index need it')
 
             embedding_index = EmbeddingHandler.load_embeddings(path)  # embedding_index is an dict, value is the feature vector
-            lstm.logger.debug(f"loading embedding from {path} done")
+            utils.logger.debug(f"loading embedding from {path} done")
             self.add_lower_to_embedding(embedding_index, vocab)  # will change embedding_index, add lower words in the vocab to this embedding
 
             embedding_matrix = np.zeros((len(word_index) + 1, 300))  # last one for unknown?
@@ -1047,8 +1035,8 @@ class EmbeddingHandler:
                 # https://stackoverflow.com/questions/49239941/what-is-unk-in-the-pretrained-glove-vector-files-e-g-glove-6b-50d-txt
                 embedding_matrix[i] = avg_vector
 
-        lstm.logger.debug(f'Done cooking embedding matrix for {path} with train/test words')
-        self.dump_obj(embedding_matrix, emb_save_filename, force=True)
+        utils.logger.debug(f'Done cooking embedding matrix for {path} with train/test words')
+        utils.dump_obj(embedding_matrix, emb_save_filename, force=True)
 
         return embedding_matrix
 
@@ -1088,9 +1076,9 @@ class EmbeddingHandler:
             raise Exception('tfrecord should already existed, please check')
 
         if embedding:
-            lstm.logger.debug("Still need build embedding matrix")
+            utils.logger.debug("Still need build embedding matrix")
             self.embedding_matrix = np.concatenate(
-                [self.build_matrix_modify_comment(f, emb_matrix_existed=False) for f in EMBEDDING_FILES], axis=-1)
+                [self.build_matrix_prepare_data(f, emb_matrix_existed=False) for f in EMBEDDING_FILES], axis=-1)
             del self.tokenizer
             if dump:
                 if embedding:
@@ -1100,8 +1088,9 @@ class EmbeddingHandler:
         elif train_test_data:  # no need to rebuild emb matrix, only need train test data
             f = EMBEDDING_FILES[0]
             if action is not None and action == lstm.CONVERT_ADDITIONAL_NONTOXIC_DATA:  # unpicker, change y
-                set_trace()
-            self.build_matrix_modify_comment(f, emb_matrix_existed=True)
+                self.build_matrix_prepare_data(f, emb_matrix_existed=True, convert_additional=True)
+                return
+            self.build_matrix_prepare_data(f, emb_matrix_existed=True)
 
         # create an embedding_matrix
         # after this, embedding_matrix is a matrix of size
@@ -1124,28 +1113,28 @@ class EmbeddingHandler:
         emb_path='../input/jigsaw-embedding-matrix/embedding.mat'
         data_path='../input/jigsaw-vectors/emb_train_features.bin'
         test_data_path='../input/jigsaw-vectors/emb_test_features.bin'
-        emb = self.get_obj_and_save(emb_path, fullpath=True)
-        data = self.get_obj_and_save(data_path, fullpath=True)
-        test_data = self.get_obj_and_save(test_data_path, fullpath=True)
+        emb = utils.get_obj_and_save(emb_path, fullpath=True)
+        data = utils.get_obj_and_save(data_path, fullpath=True)
+        test_data = utils.get_obj_and_save(test_data_path, fullpath=True)
         return emb, data, test_data
 
     def data_prepare(self, action=None):
         """Returns the iris dataset as (train_x, train_y), (test_x, test_y).
         we load this from the tfrecord, maybe save the ones just after embedding, so it can be faster
         """
-        if action is not None: lstm.logger.debug("{} in data preparation".format(action))
+        if action is not None: utils.logger.debug("{} in data preparation".format(action))
 
         try:  # just recover from record file
             emb, data_train, test_data = self.read_emb_data_from_input()
             self.x_train, self.y_train, self.y_aux_train = zip(*data_train)
             self.x_train, self.y_train, self.y_aux_train = np.array(self.x_train), np.array(self.y_train), np.array(self.y_aux_train)
-            lstm.logger.debug("restored data from files for training")
+            utils.logger.debug("restored data from files for training")
             self.BIN_FOLDER = '/proc/driver/nvidia/'
             return self.x_train, self.y_train, self.y_aux_train, test_data, emb
         except FileNotFoundError:
-            lstm.logger.debug('cannot restore emb, trainX from jigsaw kaggle file data')
+            utils.logger.debug('cannot restore emb, trainX from jigsaw kaggle file data')
         except TypeError:  # if read out None for data_train
-            lstm.logger.debug('cannot restore emb, trainX from jigsaw kaggle file data')
+            utils.logger.debug('cannot restore emb, trainX from jigsaw kaggle file data')
 
         #if os.path.isfile(DATA_FILE_FLAG) and not self.do_emb_matrix_preparation:  # in final stage, no need to check this...
         if not self.do_emb_matrix_preparation:
@@ -1159,13 +1148,14 @@ class EmbeddingHandler:
                     self.BIN_FOLDER = '/content/gdrivedata/My Drive/'
                     if not os.path.isdir(self.BIN_FOLDER):
                         self.BIN_FOLDER = './'
-                        if not self.file_exist(self.E_M_FILE, fullpath=True):
+                        if not utils.file_exist(self.E_M_FILE, fullpath=True):
                             self.BIN_FOLDER = '/proc/driver/nvidia/'
                     self.embedding_matrix = pickle.load(open(self.E_M_FILE, "rb"))
-            lstm.logger.debug(self.E_M_FILE)
+            utils.BIN_FOLDER = self.BIN_FOLDER   # save file to the right place
+            utils.logger.debug(self.E_M_FILE)
 
             if action is not None:  # exist data, need to convert data
-                lstm.logger.debug(action)
+                utils.logger.debug(action)
                 if action == lstm.CONVERT_TRAIN_DATA or action == lstm.CONVERT_ADDITIONAL_NONTOXIC_DATA:
                     self.prepare_tfrecord_data(train_test_data=True, embedding=False, action=action) # train data will rebuild, so we put it before read from pickle
 
@@ -1175,9 +1165,11 @@ class EmbeddingHandler:
                 self.BIN_FOLDER = '/content/gdrivedata/My Drive/'
                 if not os.path.isdir(self.BIN_FOLDER):
                     self.BIN_FOLDER = './'
+
+                utils.BIN_FOLDER = self.BIN_FOLDER   # save file to the right place
                 data_train = pickle.load(open(self.DATA_TRAIN_FILE, "rb"))  # (None, 2048)
 
-            lstm.logger.debug(self.DATA_TRAIN_FILE)
+            utils.logger.debug(self.DATA_TRAIN_FILE)
             self.x_test = pickle.load(open(self.DATA_TEST_FILE, "rb"))  # (None, 2048) 2048 features from xception net
 
             self.x_train, self.y_train, self.y_aux_train = zip(*data_train)
@@ -1203,11 +1195,11 @@ class EmbeddingHandler:
 
             return self.x_train, self.y_train, self.y_aux_train, self.x_test, self.embedding_matrix
         else:
-            lstm.logger.debug(self.DATA_TRAIN_FILE)
+            utils.logger.debug(self.DATA_TRAIN_FILE)
             # (x_train, y_train, y_aux_train), x_test = prepare_tfrecord_data()
             if action is not None and (action == lstm.CONVERT_TRAIN_DATA or action == lstm.CONVERT_ADDITIONAL_NONTOXIC_DATA):
                 self.embedding_matrix = pickle.load(open(self.E_M_FILE, "rb"))
-                lstm.logger.debug("Only build train test data, embedding loaded from pickle")
+                utils.logger.debug("Only build train test data, embedding loaded from pickle")
                 return self.prepare_tfrecord_data(embedding=False, action=action)
             else:
                 return self.prepare_tfrecord_data(embedding=True)
