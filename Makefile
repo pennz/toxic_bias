@@ -1,5 +1,5 @@
 export PATH := /home/v/miniconda3/envs/pyt/bin:$(PATH)
-export CC_TEST_REPORTER_ID := 501f2d3f82d0d671d4e2dab422e60140a9461aa51013ecca0e9b2285c1b4aa43
+export CC_TEST_REPORTER_ID := 089f37ae1a44948a5d8bd57ab4693aea5d34710badf28beb0f3915b96db87ab4
 PY3=python
 SRC=$(wildcard *.py)
 
